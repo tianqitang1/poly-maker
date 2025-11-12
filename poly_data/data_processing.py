@@ -18,9 +18,16 @@ def process_book_data(asset, json_data):
     global_state.all_data[asset]['bids'].update({float(entry['price']): float(entry['size']) for entry in json_data['bids']})
     global_state.all_data[asset]['asks'].update({float(entry['price']): float(entry['size']) for entry in json_data['asks']})
 
-def process_price_change(asset, side, price_level, new_size):
-    if asset_id != global_state.all_data[asset]['asset_id']:
-        return  # skip updates for the No token to prevent duplicated updates
+def process_price_change(asset, asset_id, side, price_level, new_size):
+    # Skip updates for the No token to prevent duplicated updates
+    # Only process if this is the stored asset_id (YES token)
+    if asset in global_state.all_data and asset_id != global_state.all_data[asset]['asset_id']:
+        return
+
+    # Initialize asset data if not present
+    if asset not in global_state.all_data:
+        return  # Skip if we haven't received book data yet
+
     if side == 'bids':
         book = global_state.all_data[asset]['bids']
     else:
@@ -46,10 +53,11 @@ def process_data(json_datas, trade=True):
                 
         elif event_type == 'price_change':
             for data in json_data['price_changes']:
+                asset_id = data.get('asset_id', json_data.get('asset_id', ''))
                 side = 'bids' if data['side'] == 'BUY' else 'asks'
                 price_level = float(data['price'])
                 new_size = float(data['size'])
-                process_price_change(asset, side, price_level, new_size)
+                process_price_change(asset, asset_id, side, price_level, new_size)
 
                 if trade:
                     asyncio.create_task(perform_trade(asset))
@@ -144,9 +152,8 @@ def process_user_data(rows):
 
             elif row['event_type'] == 'order':
                 print("ORDER EVENT FOR: ", row['market'], " STATUS: ",  row['status'], " TYPE: ", row['type'], " SIDE: ", side, "  ORIGINAL SIZE: ", row['original_size'], " SIZE MATCHED: ", row['size_matched'])
-                
+
                 set_order(token, side, float(row['original_size']) - float(row['size_matched']), row['price'])
                 asyncio.create_task(perform_trade(market))
-
-    else:
-        print(f"User date received for {market} but its not in")
+        else:
+            print(f"User data received for {token} in market {market} but token not in REVERSE_TOKENS")

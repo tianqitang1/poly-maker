@@ -62,7 +62,7 @@ class PolymarketClient:
             key=key,
             chain_id=chain_id,
             funder=self.browser_wallet,
-            signature_type=2
+            signature_type=1  # 1 for email/Magic wallet, 2 for browser wallet (MetaMask, etc.)
         )
 
         # Set up API credentials
@@ -132,7 +132,7 @@ class PolymarketClient:
             
         try:
             # Submit the signed order to the API
-            resp = self.client.post_order(signed_order)
+            resp = self.client.post_order(signed_order)  # OrderType.GTC is default
             return resp
         except Exception as ex:
             print(ex)

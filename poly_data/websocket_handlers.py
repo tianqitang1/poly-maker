@@ -34,10 +34,34 @@ async def connect_market_websocket(chunk):
         try:
             # Process incoming market data indefinitely
             while True:
-                message = await websocket.recv()
+                # Check if new markets were added and need to reconnect
+                if global_state.markets_changed:
+                    print("New markets detected! Reconnecting websocket to update subscription...")
+                    global_state.markets_changed = False
+                    break  # Exit to trigger reconnection with new token list
+
+                # Receive message with timeout to allow periodic checks
+                try:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    # No message received, loop back to check for market changes
+                    continue
+
                 json_data = json.loads(message)
-                # Process order book updates and trigger trading as needed
-                process_data(json_data)
+
+                # Handle different message formats from the server
+                if isinstance(json_data, str):
+                    # Server sent an error or info message
+                    print(f"Market websocket message: {json_data}")
+                    continue
+                elif isinstance(json_data, dict):
+                    # Single message, wrap in list for processing
+                    process_data([json_data])
+                elif isinstance(json_data, list):
+                    # Already a list
+                    process_data(json_data)
+                else:
+                    print(f"Unexpected data type from market websocket: {type(json_data)}")
         except websockets.ConnectionClosed:
             print("Connection closed in market websocket")
             print(traceback.format_exc())
@@ -85,8 +109,20 @@ async def connect_user_websocket():
             while True:
                 message = await websocket.recv()
                 json_data = json.loads(message)
-                # Process trade and order updates
-                process_user_data(json_data)
+
+                # Handle different message formats from the server
+                if isinstance(json_data, str):
+                    # Server sent an error or info message
+                    print(f"User websocket message: {json_data}")
+                    continue
+                elif isinstance(json_data, dict):
+                    # Single message, wrap in list for processing
+                    process_user_data([json_data])
+                elif isinstance(json_data, list):
+                    # Already a list
+                    process_user_data(json_data)
+                else:
+                    print(f"Unexpected data type from user websocket: {type(json_data)}")
         except websockets.ConnectionClosed:
             print("Connection closed in user websocket")
             print(traceback.format_exc())
