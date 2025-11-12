@@ -57,12 +57,13 @@ class PolymarketClient:
         self.browser_wallet=Web3.to_checksum_address(browser_address)
 
         # Initialize the Polymarket API client
+        # Note: Use signature_type=2 for Gnosis Safe wallets, 1 for Magic wallets
         self.client = ClobClient(
             host=host,
             key=key,
             chain_id=chain_id,
             funder=self.browser_wallet,
-            signature_type=1  # 1 for email/Magic wallet, 2 for browser wallet (MetaMask, etc.)
+            signature_type=2  # 2 for Gnosis Safe/browser wallets, 1 for email/Magic wallet
         )
 
         # Set up API credentials
