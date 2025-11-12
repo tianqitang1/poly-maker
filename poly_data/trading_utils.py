@@ -106,10 +106,32 @@ def find_best_price_with_size(price_dict, min_size, reverse=False):
 
     return best_price, best_size, second_best_price, second_best_size, top_price
 
+def _get_offset_ticks(row):
+    """
+    Safely pull the optional quote_offset_ticks column from the Selected Markets sheet.
+    Falls back to 0 when the column is missing or empty.
+    """
+    offset = 0
+
+    if hasattr(row, 'get'):
+        offset = row.get('quote_offset_ticks', 0)
+    elif isinstance(row, dict):
+        offset = row.get('quote_offset_ticks', 0)
+
+    try:
+        offset = float(offset)
+        if math.isnan(offset):
+            return 0
+    except (TypeError, ValueError):
+        return 0
+
+    return max(0, offset)
+
 def get_order_prices(best_bid, best_bid_size, top_bid,  best_ask, best_ask_size, top_ask, avgPrice, row):
 
-    bid_price = best_bid + row['tick_size']
-    ask_price = best_ask - row['tick_size']
+    tick_size = row['tick_size']
+    bid_price = best_bid + tick_size
+    ask_price = best_ask - tick_size
 
     if best_bid_size < row['min_size'] * 1.5:
         bid_price = best_bid
@@ -117,6 +139,14 @@ def get_order_prices(best_bid, best_bid_size, top_bid,  best_ask, best_ask_size,
     if best_ask_size < 250 * 1.5:
         ask_price = best_ask
     
+    offset_ticks = _get_offset_ticks(row)
+    offset_amount = offset_ticks * tick_size
+
+    if offset_amount > 0:
+        if bid_price is not None:
+            bid_price -= offset_amount
+        if ask_price is not None:
+            ask_price += offset_amount
 
     if bid_price >= top_ask:
         bid_price = top_bid
@@ -128,9 +158,24 @@ def get_order_prices(best_bid, best_bid_size, top_bid,  best_ask, best_ask_size,
         bid_price = top_bid
         ask_price = top_ask
 
-    # if ask_price <= avgPrice:
-    #     if avgPrice - ask_price <= (row['max_spread']*1.7/100):
-    #         ask_price = avgPrice
+    mid_price = None
+    if top_bid is not None and top_ask is not None:
+        mid_price = (top_bid + top_ask) / 2
+
+    if mid_price is not None and 'max_spread' in row:
+        incentive_band = row['max_spread'] / 100
+        floor_price = mid_price - incentive_band
+        ceiling_price = mid_price + incentive_band
+
+        if bid_price < floor_price:
+            bid_price = floor_price
+        if ask_price > ceiling_price:
+            ask_price = ceiling_price
+
+    if bid_price < 0:
+        bid_price = 0
+    if ask_price > 1:
+        ask_price = 1
 
     #temp for sleep
     if ask_price <= avgPrice and avgPrice > 0:
@@ -194,4 +239,3 @@ def get_buy_sell_amount(position, bid_price, row, other_token_position=0):
             buy_amount = buy_amount * int(multiplier)
 
     return buy_amount, sell_amount
-

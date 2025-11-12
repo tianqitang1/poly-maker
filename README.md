@@ -141,6 +141,12 @@ The bot is configured via a Google Spreadsheet with several worksheets:
 - **All Markets**: Database of all markets on Polymarket
 - **Hyperparameters**: Configuration parameters for the trading logic
 
+### Selected Markets sheet
+
+- Add an optional `quote_offset_ticks` column to control how far from the midpoint each market quotes.  
+  - `0` (or blank) preserves the old behavior of posting one tick inside the spread.  
+  - Positive integers move bids lower and asks higher by that many additional ticks (still clamped to the reward band), which reduces the chance of getting filled too close to mid.
+
 
 ## Poly Merger
 
