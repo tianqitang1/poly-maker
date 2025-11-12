@@ -166,9 +166,10 @@ async def perform_trade(market):
             pos_2 = get_position(row['token2'])['size']
 
             # ------- POSITION MERGING LOGIC -------
+            # DISABLED: merge.js only works with Gnosis Safe wallets, not Magic wallets
             # Calculate if we have opposing positions that can be merged
             amount_to_merge = min(pos_1, pos_2)
-            
+
             # Only merge if positions are above minimum threshold
             if float(amount_to_merge) > CONSTANTS.MIN_MERGE_SIZE:
                 # Get exact position sizes from blockchain for merging
@@ -176,14 +177,15 @@ async def perform_trade(market):
                 pos_2 = client.get_position(row['token2'])[0]
                 amount_to_merge = min(pos_1, pos_2)
                 scaled_amt = amount_to_merge / 10**6
-                
+
                 if scaled_amt > CONSTANTS.MIN_MERGE_SIZE:
-                    print(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}. Merging positions")
-                    # Execute the merge operation
-                    client.merge_positions(amount_to_merge, market, row['neg_risk'] == 'TRUE')
-                    # Update our local position tracking
-                    set_position(row['token1'], 'SELL', scaled_amt, 0, 'merge')
-                    set_position(row['token2'], 'SELL', scaled_amt, 0, 'merge')
+                    print(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}.")
+                    print(f"SKIPPING MERGE: Automatic merging disabled (merge.js incompatible with Magic wallets)")
+                    print(f"You can manually merge {scaled_amt} tokens via Polymarket UI if needed")
+                    # TODO: Implement direct merge for Magic/EOA wallets without Safe helpers
+                    # client.merge_positions(amount_to_merge, market, row['neg_risk'] == 'TRUE')
+                    # set_position(row['token1'], 'SELL', scaled_amt, 0, 'merge')
+                    # set_position(row['token2'], 'SELL', scaled_amt, 0, 'merge')
                     
             # ------- TRADING LOGIC FOR EACH OUTCOME -------
             # Loop through both outcomes in the market (YES and NO)
