@@ -34,19 +34,7 @@ async def connect_market_websocket(chunk):
         try:
             # Process incoming market data indefinitely
             while True:
-                # Check if new markets were added and need to reconnect
-                if global_state.markets_changed:
-                    print("New markets detected! Reconnecting websocket to update subscription...")
-                    global_state.markets_changed = False
-                    break  # Exit to trigger reconnection with new token list
-
-                # Receive message with timeout to allow periodic checks
-                try:
-                    message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
-                except asyncio.TimeoutError:
-                    # No message received, loop back to check for market changes
-                    continue
-
+                message = await websocket.recv()
                 json_data = json.loads(message)
 
                 # Handle different message formats from the server
