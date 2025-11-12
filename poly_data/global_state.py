@@ -6,6 +6,9 @@ import pandas as pd
 # List of all tokens being tracked
 all_tokens = []
 
+# Flag to trigger websocket reconnection when markets are added
+markets_changed = False
+
 # Mapping between tokens in the same market (YES->NO, NO->YES)
 REVERSE_TOKENS = {}  
 
