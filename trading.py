@@ -147,7 +147,14 @@ async def perform_trade(market):
         try:
             client = global_state.client
             # Get market details from the configuration
-            row = global_state.df[global_state.df['condition_id'] == market].iloc[0]      
+            market_df = global_state.df[global_state.df['condition_id'] == market]
+
+            # Check if market exists in configuration
+            if market_df.empty:
+                print(f"Warning: Market {market} not found in configuration dataframe. Skipping trade.")
+                return
+
+            row = market_df.iloc[0]      
             # Determine decimal precision from tick size
             round_length = len(str(row['tick_size']).split(".")[1])
 
@@ -199,19 +206,24 @@ async def perform_trade(market):
                 #if deet has None for one these values below, call it with min size of 20
                 if deets['best_bid'] is None or deets['best_ask'] is None or deets['best_bid_size'] is None or deets['best_ask_size'] is None:
                     deets = get_best_bid_ask_deets(market, detail['name'], 20, 0.1)
-                
+
                 # Extract all order book details
                 best_bid = deets['best_bid']
                 best_bid_size = deets['best_bid_size']
                 second_best_bid = deets['second_best_bid']
-                second_best_bid_size = deets['second_best_bid_size'] 
+                second_best_bid_size = deets['second_best_bid_size']
                 top_bid = deets['top_bid']
                 best_ask = deets['best_ask']
                 best_ask_size = deets['best_ask_size']
                 second_best_ask = deets['second_best_ask']
                 second_best_ask_size = deets['second_best_ask_size']
                 top_ask = deets['top_ask']
-                
+
+                # Check if we still have None values after retry - skip if market has insufficient data
+                if best_bid is None or best_ask is None or top_bid is None or top_ask is None:
+                    print(f"Skipping {detail['answer']}: Insufficient market data (best_bid={best_bid}, best_ask={best_ask}, top_bid={top_bid}, top_ask={top_ask})")
+                    continue
+
                 # Round prices to appropriate precision
                 best_bid = round(best_bid, round_length)
                 best_ask = round(best_ask, round_length)
