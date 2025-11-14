@@ -349,7 +349,8 @@ async def perform_trade(market):
                     except:
                         ratio = 0
 
-                    pos_to_sell = sell_amount  # Amount to sell in risk-off scenario
+                    # When stop-loss triggers, sell the ENTIRE position to exit quickly
+                    pos_to_sell = position
 
                     # ------- STOP-LOSS LOGIC -------
                     # Trigger stop-loss if either:
@@ -471,7 +472,14 @@ async def perform_trade(market):
                         
                 # ------- TAKE PROFIT / SELL ORDER MANAGEMENT -------
                 elif sell_amount > 0:
-                    order['size'] = sell_amount
+                    # Sell the ENTIRE position, not just trade_size
+                    # This handles cases where position > trade_size (oversized) or position < trade_size
+                    order['size'] = position
+
+                    # Skip if position is too small (dust)
+                    if position < row['min_size'] * 0.5:
+                        print(f"Position {position} too small to sell (min_size: {row['min_size']}), skipping")
+                        continue
 
                     # Calculate take-profit price based on average cost
                     tp_price = round_up(avgPrice + (avgPrice * params['take_profit_threshold']/100), round_length)
