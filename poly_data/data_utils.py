@@ -20,26 +20,48 @@ def update_positions(avgOnly=False):
         if not avgOnly:
             position['size'] = row['size']
         else:
-            
+            # Only block position updates for a SHORT time after last trade update
+            # This prevents indefinite blocking when trades get stuck in 'performing'
+
+            try:
+                old_size = position['size']
+            except:
+                old_size = 0
+
+            # Check if we have any pending trades
+            has_pending_trades = False
             for col in [f"{asset}_sell", f"{asset}_buy"]:
-                #need to review this
-                if col not in global_state.performing or not isinstance(global_state.performing[col], set) or len(global_state.performing[col]) == 0:
-                    try:
-                        old_size = position['size']
-                    except:
-                        old_size = 0
+                if col in global_state.performing and isinstance(global_state.performing[col], set) and len(global_state.performing[col]) > 0:
+                    has_pending_trades = True
+                    break
 
-                    if asset in  global_state.last_trade_update:
-                        if time.time() - global_state.last_trade_update[asset] < 5:
-                            print(f"Skipping update for {asset} because last trade update was less than 5 seconds ago")
-                            continue
+            # Determine if we should update position
+            should_update = False
 
-                    if old_size != row['size']:
-                        print(f"No trades are pending. Updating position from {old_size} to {row['size']} and avgPrice to {row['avgPrice']} using API")
-    
-                    position['size'] = row['size']
+            if not has_pending_trades:
+                # No pending trades - always safe to update
+                should_update = True
+            elif asset in global_state.last_trade_update:
+                # Has pending trades - only block updates for 10 seconds after last trade
+                time_since_last_trade = time.time() - global_state.last_trade_update[asset]
+
+                if time_since_last_trade < 10:
+                    # Recent trade - block update to avoid race conditions
+                    print(f"Skipping update for {asset} - recent trade {time_since_last_trade:.1f}s ago, pending trades exist")
+                    should_update = False
                 else:
-                    print(f"ALERT: Skipping update for {asset} because there are trades pending for {col} looking like {global_state.performing[col]}")
+                    # Trade is old (>10s) - force update even with pending trades
+                    # This handles stuck trades that never get CONFIRMED
+                    print(f"FORCING position update for {asset} - {time_since_last_trade:.1f}s since last trade, but trades still pending (likely stuck)")
+                    should_update = True
+            else:
+                # Has pending trades but no last_trade_update timestamp - update anyway
+                print(f"Updating position for {asset} - pending trades exist but no timestamp recorded")
+                should_update = True
+
+            if should_update and old_size != row['size']:
+                print(f"Updating position from {old_size} to {row['size']} and avgPrice to {row['avgPrice']} using API")
+                position['size'] = row['size']
     
         global_state.positions[asset] = position
 
