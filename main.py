@@ -21,6 +21,104 @@ def update_once():
     update_positions()  # Get current positions from Polymarket
     update_orders()     # Get current orders from Polymarket
 
+def cleanup_inactive_markets():
+    """
+    Clean up positions and orders for markets that are no longer in the trading list.
+    This handles markets that lost rewards or were removed from the sheet.
+    """
+    try:
+        # Get set of active condition_ids from loaded dataframe
+        active_condition_ids = set(global_state.df['condition_id'].tolist())
+
+        # Get all tokens we have positions or orders on
+        active_tokens = set()
+        for token in global_state.positions.keys():
+            if global_state.positions[token]['size'] > 0:
+                active_tokens.add(token)
+
+        for token in global_state.orders.keys():
+            if global_state.orders[token]['buy']['size'] > 0 or global_state.orders[token]['sell']['size'] > 0:
+                active_tokens.add(token)
+
+        # Find markets we have exposure to but aren't in the trading list
+        # Build a mapping of all tokens to their condition_ids from the dataframe
+        all_tokens_in_df = set()
+        for _, row in global_state.df.iterrows():
+            all_tokens_in_df.add(str(row['token1']))
+            all_tokens_in_df.add(str(row['token2']))
+
+        tokens_to_cleanup = []
+        for token in active_tokens:
+            token_str = str(token)
+            # If this token is not in any of the active markets, mark for cleanup
+            if token_str not in all_tokens_in_df:
+                # Find the condition_id by looking up in REVERSE_TOKENS or positions
+                condition_id = None
+                # Try to find it in the reverse tokens mapping if available
+                if hasattr(global_state, 'TOKEN_TO_CONDITION'):
+                    condition_id = global_state.TOKEN_TO_CONDITION.get(token_str)
+
+                tokens_to_cleanup.append((token, condition_id))
+
+        if not tokens_to_cleanup:
+            print("No inactive markets found with positions/orders")
+            return
+
+        print(f"\n{'='*80}")
+        print(f"Found {len(tokens_to_cleanup)} tokens on inactive markets. Cleaning up...")
+        print(f"{'='*80}")
+
+        for token, condition_id in tokens_to_cleanup:
+            token_str = str(token)
+            position = global_state.positions.get(token_str, {'size': 0, 'avgPrice': 0})
+            orders = global_state.orders.get(token_str, {'buy': {'size': 0, 'price': 0}, 'sell': {'size': 0, 'price': 0}})
+
+            print(f"\nToken {token_str} (market {condition_id[:16]}...):")
+            print(f"  Position: {position['size']} @ avg {position['avgPrice']}")
+            print(f"  Orders: Buy {orders['buy']['size']} @ {orders['buy']['price']}, Sell {orders['sell']['size']} @ {orders['sell']['price']}")
+
+            # Cancel all orders for this token
+            if orders['buy']['size'] > 0 or orders['sell']['size'] > 0:
+                print(f"  → Cancelling all orders for token {token_str}")
+                global_state.client.cancel_all_asset(token)
+
+            # Exit position if we have one
+            if position['size'] > 0:
+                print(f"  → Exiting position of {position['size']} shares")
+                try:
+                    # Try to get current market price to sell at best bid
+                    sell_price = 0.5  # Default fallback price
+
+                    if condition_id:
+                        try:
+                            from poly_data.trading_utils import get_best_bid_ask_deets
+                            deets = get_best_bid_ask_deets(condition_id, 'token1', 20, 0.1)
+                            best_bid = deets.get('best_bid')
+                            if best_bid and best_bid > 0:
+                                sell_price = best_bid
+                        except:
+                            pass  # Fall back to 0.5
+
+                    print(f"  → Placing market sell order for {position['size']} @ {sell_price}")
+                    global_state.client.create_order(
+                        token,
+                        'SELL',
+                        sell_price,
+                        position['size'],
+                        False  # Assume not neg_risk since we don't have market info
+                    )
+                except Exception as ex:
+                    print(f"  → Error exiting position: {ex}")
+                    traceback.print_exc()
+
+        print(f"\n{'='*80}")
+        print("Cleanup complete")
+        print(f"{'='*80}\n")
+
+    except Exception as ex:
+        print(f"Error in cleanup_inactive_markets: {ex}")
+        print(traceback.format_exc())
+
 def remove_from_pending():
     """
     Clean up stale trades that have been pending for too long (>15 seconds).
@@ -68,6 +166,7 @@ def update_periodically():
             # Update market data every 6th cycle (30 seconds)
             if i % 6 == 0:
                 update_markets()
+                cleanup_inactive_markets()  # Clean up positions on removed markets
                 i = 1
                     
             gc.collect()  # Force garbage collection to free memory
@@ -87,6 +186,9 @@ async def main():
     global_state.all_tokens = []
     update_once()
     print("After initial updates: ", global_state.orders, global_state.positions)
+
+    # Clean up any positions/orders on markets that are no longer being traded
+    cleanup_inactive_markets()
 
     print("\n")
     print(f'There are {len(global_state.df)} market, {len(global_state.positions)} positions and {len(global_state.orders)} orders. Starting positions: {global_state.positions}')
