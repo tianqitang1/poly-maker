@@ -121,28 +121,52 @@ def cleanup_inactive_markets():
 
 def remove_from_pending():
     """
-    Clean up stale trades that have been pending for too long (>15 seconds).
-    This prevents the system from getting stuck on trades that may have failed.
+    Clean up stale trades that have been pending for too long (>10 seconds).
+    This prevents the system from getting stuck on trades that may have failed or never received confirmation.
+    Also triggers a position refresh after cleanup to ensure state is correct.
     """
     try:
         current_time = time.time()
-            
+        removed_any = False
+        affected_tokens = set()
+
         # Iterate through all performing trades
         for col in list(global_state.performing.keys()):
             for trade_id in list(global_state.performing[col]):
-                
+
                 try:
-                    # If trade has been pending for more than 15 seconds, remove it
-                    if current_time - global_state.performing_timestamps[col].get(trade_id, current_time) > 15:
-                        print(f"Removing stale entry {trade_id} from {col} after 15 seconds")
+                    # If trade has been pending for more than 10 seconds, remove it
+                    timestamp = global_state.performing_timestamps.get(col, {}).get(trade_id, current_time)
+                    time_pending = current_time - timestamp
+
+                    if time_pending > 10:
+                        print(f"⚠️  Removing stale trade {trade_id} from {col} (pending for {time_pending:.1f}s)")
+
+                        # Extract token from col (format: "token_side")
+                        token = col.rsplit('_', 1)[0]
+                        affected_tokens.add(token)
+
                         remove_from_performing(col, trade_id)
-                        print("After removing: ", global_state.performing, global_state.performing_timestamps)
-                except:
-                    print("Error in remove_from_pending")
-                    print(traceback.format_exc())                
-    except:
-        print("Error in remove_from_pending")
-        print(traceback.format_exc())
+                        removed_any = True
+                except Exception as ex:
+                    print(f"Error removing stale trade {trade_id} from {col}: {ex}")
+                    traceback.print_exc()
+
+        if removed_any:
+            print(f"Cleaned up stale trades. Affected tokens: {affected_tokens}")
+            print(f"Remaining performing: {global_state.performing}")
+
+            # Force a position refresh for affected tokens
+            try:
+                from poly_data.data_utils import update_positions
+                print("Triggering position refresh after stale trade cleanup...")
+                update_positions(avgOnly=False)  # Full refresh to get accurate positions
+            except Exception as ex:
+                print(f"Error refreshing positions after cleanup: {ex}")
+
+    except Exception as ex:
+        print(f"Error in remove_from_pending: {ex}")
+        traceback.print_exc()
 
 def update_periodically():
     """
