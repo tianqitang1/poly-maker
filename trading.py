@@ -78,13 +78,22 @@ def send_buy_order(order):
         if order['price'] >= 0.1 and order['price'] < 0.9:
             print(f'Creating new order for {order["size"]} at {order["price"]}')
             print(order['token'], 'BUY', order['price'], order['size'])
-            client.create_order(
-                order['token'], 
-                'BUY', 
-                order['price'], 
-                order['size'], 
-                True if order['neg_risk'] == 'TRUE' else False
-            )
+            try:
+                client.create_order(
+                    order['token'],
+                    'BUY',
+                    order['price'],
+                    order['size'],
+                    True if order['neg_risk'] == 'TRUE' else False
+                )
+            except Exception as ex:
+                # Check if this is a balance/allowance error (not enough funds)
+                error_msg = str(ex).lower()
+                if 'balance' in error_msg or 'allowance' in error_msg:
+                    print(f"WARNING: Buy order failed with balance/allowance error - not enough capital")
+                else:
+                    # Re-raise if it's a different error
+                    raise
         else:
             print("Not creating buy order because its outside acceptable price range (0.1-0.9)")
     else:
@@ -126,13 +135,34 @@ def send_sell_order(order):
         return  # Don't place new order if existing one is fine
 
     print(f'Creating new order for {order["size"]} at {order["price"]}')
-    client.create_order(
-        order['token'], 
-        'SELL', 
-        order['price'], 
-        order['size'], 
-        True if order['neg_risk'] == 'TRUE' else False
-    )
+    try:
+        client.create_order(
+            order['token'],
+            'SELL',
+            order['price'],
+            order['size'],
+            True if order['neg_risk'] == 'TRUE' else False
+        )
+    except Exception as ex:
+        # Check if this is a balance/allowance error (position already sold)
+        error_msg = str(ex).lower()
+        if 'balance' in error_msg or 'allowance' in error_msg:
+            print(f"WARNING: Sell order failed with balance/allowance error. Refreshing position for token {order['token']}")
+            # Force update the actual position from blockchain
+            from poly_data.data_utils import get_position, set_position
+            try:
+                actual_position = client.get_position(order['token'])[0] / 10**6
+                current_avg = get_position(order['token'])['avgPrice']
+                print(f"  Cached position was {order['size']}, actual on-chain position is {actual_position}")
+                # Update our cached position to match reality
+                if actual_position != order['size']:
+                    set_position(order['token'], 'SELL', order['size'] - actual_position, current_avg, 'correction')
+                    print(f"  Updated cached position to {actual_position}")
+            except Exception as refresh_ex:
+                print(f"  Error refreshing position: {refresh_ex}")
+        else:
+            # Re-raise if it's a different error
+            raise
 
 # Dictionary to store locks for each market to prevent concurrent trading on the same market
 market_locks = {}
