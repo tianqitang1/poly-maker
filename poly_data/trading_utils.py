@@ -206,13 +206,14 @@ def get_buy_sell_amount(position, bid_price, row, other_token_position=0):
     total_exposure = position + other_token_position
     
     # If we haven't reached max_size on either side, continue building
-    if position < max_size:
+    # Use 0.95 threshold to account for floating point precision and partial fills
+    if position < max_size * 0.95:
         # Continue quoting trade_size amounts until we reach max_size
         remaining_to_max = max_size - position
         buy_amount = min(trade_size, remaining_to_max)
-        
+
         # Only sell if we have substantial position (to allow for exit when needed)
-        if position >= trade_size:
+        if position >= trade_size * 0.5:
             sell_amount = min(position, trade_size)
         else:
             sell_amount = 0
@@ -221,10 +222,13 @@ def get_buy_sell_amount(position, bid_price, row, other_token_position=0):
         # Always offer to sell trade_size amount when at max_size
         sell_amount = min(position, trade_size)
 
-        # Continue quoting to buy if total exposure warrants it
-        if total_exposure < max_size * 1.5:  # Allow some flexibility for market making
+        # Only continue buying if we're truly market making (have position on other side too)
+        # This prevents over-sizing on one side while allowing balanced market making
+        if other_token_position >= trade_size and total_exposure < max_size * 1.5:
+            # Both sides have positions, allow flexibility for market making
             buy_amount = trade_size
         else:
+            # Maxed out on one side only, stop buying
             buy_amount = 0
 
     # Ensure minimum order size compliance

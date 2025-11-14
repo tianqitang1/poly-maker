@@ -392,6 +392,20 @@ async def perform_trade(market):
                 # 2. Position is less than absolute cap (250)
                 # 3. Buy amount is above minimum size
                 if position < max_size and position < 250 and buy_amount > 0 and buy_amount >= row['min_size']:
+                    # EARLY CHECK: Don't buy if we have opposing position
+                    rev_token = global_state.REVERSE_TOKENS[str(token)]
+                    rev_pos = get_position(rev_token)
+
+                    # Two thresholds:
+                    # 1. If reverse position is >= 80% of max_size, definitely don't buy opposite side
+                    # 2. If reverse position > min_size or > 10% of max_size, don't buy
+                    if rev_pos['size'] >= max_size * 0.8 or rev_pos['size'] > max(row['min_size'], max_size * 0.1):
+                        print(f"Bypassing buy logic for {detail['answer']} - opposing position of {rev_pos['size']} exists (max_size: {max_size}, min_size: {row['min_size']})")
+                        if orders['buy']['size'] > CONSTANTS.MIN_MERGE_SIZE:
+                            print(f"Cancelling buy orders because there is a reverse position of {rev_pos['size']}")
+                            client.cancel_all_asset(token)
+                        continue
+
                     # Get reference price from market data
                     sheet_value = row['best_bid']
 
@@ -430,19 +444,6 @@ async def perform_trade(market):
                                   f'0.05 of {sheet_value}. Cancelling all orders')
                             client.cancel_all_asset(order['token'])
                         else:
-                            # Check for reverse position (holding opposite outcome)
-                            rev_token = global_state.REVERSE_TOKENS[str(token)]
-                            rev_pos = get_position(rev_token)
-
-                            # If we have significant opposing position, don't buy more
-                            if rev_pos['size'] > row['min_size']:
-                                print("Bypassing creation of new buy order because there is a reverse position")
-                                if orders['buy']['size'] > CONSTANTS.MIN_MERGE_SIZE:
-                                    print("Cancelling buy orders because there is a reverse position")
-                                    client.cancel_all_asset(order['token'])
-                                
-                                continue
-                            
                             # Check market buy/sell volume ratio
                             if overall_ratio < 0:
                                 send_buy = False
@@ -468,30 +469,83 @@ async def perform_trade(market):
                                 #     print(f"Cancelling buy orders because best size is less than 90% of open orders and spread is too large")
                                 #     global_state.client.cancel_all_asset(order['token'])
                         
-                # ------- TAKE PROFIT / SELL ORDER MANAGEMENT -------            
+                # ------- TAKE PROFIT / SELL ORDER MANAGEMENT -------
                 elif sell_amount > 0:
                     order['size'] = sell_amount
-                    
+
                     # Calculate take-profit price based on average cost
                     tp_price = round_up(avgPrice + (avgPrice * params['take_profit_threshold']/100), round_length)
-                    order['price'] = round_up(tp_price if ask_price < tp_price else ask_price, round_length)
-                    
+
+                    # Track market price history to detect trend
+                    market_state_file = f'positions/{market}_{detail["name"]}_market.json'
+                    previous_mid_price = None
+                    if os.path.isfile(market_state_file):
+                        try:
+                            market_state = json.load(open(market_state_file))
+                            previous_mid_price = market_state.get('mid_price')
+                        except:
+                            pass
+
+                    # Save current mid_price for next iteration
+                    json.dump({'mid_price': float(mid_price)}, open(market_state_file, 'w'))
+
+                    # Determine if market is moving up, down, or stable
+                    market_trend = 'unknown'
+                    if previous_mid_price is not None:
+                        price_change = mid_price - previous_mid_price
+                        if price_change > 0.01:  # Moving up by more than 1 cent
+                            market_trend = 'up'
+                        elif price_change < -0.01:  # Moving down by more than 1 cent
+                            market_trend = 'down'
+                        else:
+                            market_trend = 'stable'
+
+                    # Calculate optimal sell price based on market conditions
+                    # Start with a competitive price in the reward range
+                    min_profitable_price = round_up(avgPrice * 1.01, round_length)  # At least 1% profit
+
+                    # Competitive sell price: slightly above best ask to earn rewards
+                    competitive_price = round_up(best_ask + row['tick_size'], round_length)
+
+                    # If market is moving up, progressively move toward take-profit price
+                    if market_trend == 'up':
+                        # Interpolate between competitive price and tp_price based on how close we are
+                        current_order_price = float(orders['sell']['price']) if orders['sell']['price'] > 0 else competitive_price
+                        # Move 20% of the way toward tp_price each update when trending up
+                        target_price = current_order_price + (tp_price - current_order_price) * 0.2
+                        target_price = round_up(target_price, round_length)
+                        print(f"Market trending UP. Moving sell price from {current_order_price} toward tp_price {tp_price}. Target: {target_price}")
+                    else:
+                        # Market stable or down: use competitive pricing
+                        target_price = max(competitive_price, min_profitable_price)
+                        target_price = min(target_price, tp_price)  # Cap at take-profit
+                        target_price = round_up(target_price, round_length)
+                        print(f"Market {market_trend}. Using competitive pricing. Target: {target_price} (best_ask: {best_ask}, min_profit: {min_profitable_price})")
+
+                    order['price'] = target_price
+
                     tp_price = float(tp_price)
                     order_price = float(orders['sell']['price'])
-                    
-                    # Calculate % difference between current order and ideal price
-                    diff = abs(order_price - tp_price)/tp_price * 100
+                    target_price = float(target_price)
+
+                    # Calculate % difference between current order and target price
+                    diff = abs(order_price - target_price)/target_price * 100 if target_price > 0 else 100
 
                     # Update sell order if:
-                    # 1. Current order price is significantly different from target
+                    # 1. Current order price is significantly different from target (>2%)
                     if diff > 2:
-                        print(f"Sending Sell Order for {token} because better current order price of "
-                              f"{order_price} is deviant from the tp_price of {tp_price} and diff is {diff}")
+                        print(f"Sending Sell Order for {token} because current order price of "
+                              f"{order_price} is deviant from target price of {target_price} and diff is {diff:.1f}%")
                         send_sell_order(order)
                     # 2. Current order size is too small for our position
                     elif orders['sell']['size'] < position * 0.97:
                         print(f"Sending Sell Order for {token} because not enough sell size. "
                               f"Position: {position}, Sell Size: {orders['sell']['size']}")
+                        send_sell_order(order)
+                    # 3. Market is trending up and we should move price higher
+                    elif market_trend == 'up' and order_price < target_price - row['tick_size']:
+                        print(f"Sending Sell Order for {token} to raise price as market trends up. "
+                              f"Current: {order_price}, Target: {target_price}")
                         send_sell_order(order)
                     
                     # Commented out additional conditions for updating sell orders
