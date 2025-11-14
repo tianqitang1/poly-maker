@@ -220,9 +220,9 @@ def get_buy_sell_amount(position, bid_price, row, other_token_position=0):
         # We've reached max_size, implement progressive exit strategy
         # Always offer to sell trade_size amount when at max_size
         sell_amount = min(position, trade_size)
-        
+
         # Continue quoting to buy if total exposure warrants it
-        if total_exposure < max_size * 2:  # Allow some flexibility for market making
+        if total_exposure < max_size * 1.5:  # Allow some flexibility for market making
             buy_amount = trade_size
         else:
             buy_amount = 0

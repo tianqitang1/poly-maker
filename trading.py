@@ -20,16 +20,28 @@ if not os.path.exists('positions/'):
 def send_buy_order(order):
     """
     Create a BUY order for a specific token.
-    
+
     This function:
     1. Cancels any existing orders for the token
     2. Checks if the order price is within acceptable range
     3. Creates a new buy order if conditions are met
-    
+
     Args:
         order (dict): Order details including token, price, size, and market parameters
     """
     client = global_state.client
+
+    # Safety check: get current position and ensure order won't exceed max_size
+    from poly_data.data_utils import get_position
+    current_pos = get_position(order['token'])['size']
+    max_size = order['row'].get('max_size', order['row']['trade_size'])
+
+    # If current position + order size would exceed max_size * 1.1, reduce order size
+    if current_pos + order['size'] > max_size * 1.1:
+        print(f"WARNING: Position ({current_pos}) + Order ({order['size']}) would exceed max_size ({max_size}) by >10%")
+        # Cancel all orders to prevent over-sizing
+        client.cancel_all_asset(order['token'])
+        return
 
     # Only cancel existing orders if we need to make significant changes
     existing_buy_size = order['orders']['buy']['size']
@@ -307,7 +319,16 @@ async def perform_trade(market):
 
                     # Get fresh market data for risk assessment
                     n_deets = get_best_bid_ask_deets(market, detail['name'], 100, 0.1)
-                    
+
+                    # Retry with smaller size if needed
+                    if n_deets['best_bid'] is None or n_deets['best_ask'] is None:
+                        n_deets = get_best_bid_ask_deets(market, detail['name'], 20, 0.1)
+
+                    # Check if we still have None values - skip sell logic if market data unavailable
+                    if n_deets['best_bid'] is None or n_deets['best_ask'] is None:
+                        print(f"Skipping sell logic for {detail['answer']}: Insufficient market data (best_bid={n_deets['best_bid']}, best_ask={n_deets['best_ask']})")
+                        continue
+
                     # Calculate current market price and spread
                     mid_price = round_up((n_deets['best_bid'] + n_deets['best_ask']) / 2, round_length)
                     spread = round(n_deets['best_ask'] - n_deets['best_bid'], 2)
@@ -358,7 +379,14 @@ async def perform_trade(market):
                 # ------- BUY ORDER LOGIC -------
                 # Get max_size, defaulting to trade_size if not specified
                 max_size = row.get('max_size', row['trade_size'])
-                
+
+                # Cancel buy orders if position is at or above 90% of max_size to prevent over-sizing
+                if position >= max_size * 0.9 and orders['buy']['size'] > 0:
+                    print(f"Cancelling buy orders - position ({position}) at or above 90% of max_size ({max_size})")
+                    client.cancel_all_asset(token)
+                    # Set buy_amount to 0 to skip buy logic below
+                    buy_amount = 0
+
                 # Only buy if:
                 # 1. Position is less than max_size (new logic)
                 # 2. Position is less than absolute cap (250)
