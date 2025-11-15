@@ -38,21 +38,33 @@ class PolymarketClient:
     The client connects to both the Polymarket API and the Polygon blockchain.
     """
     
-    def __init__(self, pk='default') -> None:
+    def __init__(self, pk='default', use_near_sure=False) -> None:
         """
         Initialize the Polymarket client with API and blockchain connections.
-        
+
         Args:
             pk (str, optional): Private key identifier, defaults to 'default'
+            use_near_sure (bool, optional): If True, use NEAR_SURE_* env vars instead of default PK/BROWSER_ADDRESS
         """
         host="https://clob.polymarket.com"
 
         # Get credentials from environment variables
-        key=os.getenv("PK")
-        browser_address = os.getenv("BROWSER_ADDRESS")
+        if use_near_sure:
+            key = os.getenv("NEAR_SURE_PK")
+            browser_address = os.getenv("NEAR_SURE_BROWSER_ADDRESS")
+            print("Initializing Polymarket client for NEAR-SURE account...")
+        else:
+            key = os.getenv("PK")
+            browser_address = os.getenv("BROWSER_ADDRESS")
+            print("Initializing Polymarket client...")
 
-        # Don't print sensitive wallet information
-        print("Initializing Polymarket client...")
+        if not key or not browser_address:
+            env_prefix = "NEAR_SURE_" if use_near_sure else ""
+            raise ValueError(
+                f"Missing environment variables: {env_prefix}PK and/or {env_prefix}BROWSER_ADDRESS. "
+                f"Please set them in your .env file."
+            )
+
         chain_id=POLYGON
         self.browser_wallet=Web3.to_checksum_address(browser_address)
 
