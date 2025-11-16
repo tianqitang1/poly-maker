@@ -8,6 +8,7 @@ import time
 from typing import Dict, Tuple
 from datetime import datetime
 from neg_risk_arb.arbitrage_scanner import load_config
+from poly_utils.logging_utils import get_logger
 
 
 class ArbitrageRiskManager:
@@ -15,18 +16,22 @@ class ArbitrageRiskManager:
     Manages risk for arbitrage execution, especially partial fills.
     """
 
-    def __init__(self, client, config_path='neg_risk_arb/config.yaml'):
+    def __init__(self, client, config_path='neg_risk_arb/config.yaml', logger=None):
         """
         Initialize the risk manager.
 
         Args:
             client: PolymarketClient instance
             config_path: Path to configuration file
+            logger: BotLogger instance (optional)
         """
         self.client = client
 
         # Load configuration
         self.config = load_config(config_path)
+
+        # Setup logging
+        self.logger = logger if logger else get_logger('neg_risk_arb')
 
         # Track execution history
         self.execution_history = []

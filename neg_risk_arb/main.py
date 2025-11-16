@@ -27,6 +27,7 @@ from poly_data.polymarket_client import PolymarketClient
 from neg_risk_arb.arbitrage_scanner import ArbitrageScanner
 from neg_risk_arb.executor import ArbitrageExecutor
 from neg_risk_arb.risk_manager import ArbitrageRiskManager
+from poly_utils.logging_utils import get_logger
 
 
 def scan_mode(config_path='neg_risk_arb/config.yaml'):
@@ -86,10 +87,13 @@ def trade_mode(config_path='neg_risk_arb/config.yaml', dry_run=False):
         # Initialize client
         client = PolymarketClient(account_type='neg_risk_arb')
 
+        # Initialize logger
+        logger = get_logger('neg_risk_arb')
+
         # Initialize components
         scanner = ArbitrageScanner(client, config_path)
-        executor = ArbitrageExecutor(client, config_path)
-        risk_manager = ArbitrageRiskManager(client, config_path)
+        executor = ArbitrageExecutor(client, config_path, logger=logger)
+        risk_manager = ArbitrageRiskManager(client, config_path, logger=logger)
 
         # Check risk limits
         can_trade, reason = risk_manager.check_risk_limits()

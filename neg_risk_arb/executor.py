@@ -8,6 +8,7 @@ import time
 from typing import Dict, Optional, Tuple
 from datetime import datetime
 from neg_risk_arb.arbitrage_scanner import load_config
+from poly_utils.logging_utils import get_logger
 
 
 class ArbitrageExecutor:
@@ -15,18 +16,22 @@ class ArbitrageExecutor:
     Executes arbitrage trades with partial fill protection.
     """
 
-    def __init__(self, client, config_path='neg_risk_arb/config.yaml'):
+    def __init__(self, client, config_path='neg_risk_arb/config.yaml', logger=None):
         """
         Initialize the executor.
 
         Args:
             client: PolymarketClient instance
             config_path: Path to configuration file
+            logger: BotLogger instance (optional, will create if not provided)
         """
         self.client = client
 
         # Load configuration
         self.config = load_config(config_path)
+
+        # Setup logging
+        self.logger = logger if logger else get_logger('neg_risk_arb')
 
     def validate_opportunity(self, opportunity: Dict) -> bool:
         """
@@ -258,6 +263,15 @@ class ArbitrageExecutor:
                     is_neg_risk_market=neg_risk
                 )
                 print("✓ Positions merged successfully!")
+
+                # Log merge
+                self.logger.log_merge(
+                    market=opportunity['question'],
+                    size=merge_size,
+                    recovered=merge_size,
+                    condition_id=condition_id
+                )
+
                 return True
             except Exception as e:
                 print(f"Merge attempt {attempt + 1} failed: {e}")
@@ -355,6 +369,19 @@ class ArbitrageExecutor:
                 result['realized_profit'] = realized_profit
                 result['profit_bps'] = opportunity['profit_bps']
 
+                # Log successful arbitrage
+                self.logger.log_arbitrage(
+                    market=opportunity['question'],
+                    yes_price=opportunity['yes_ask_price'],
+                    no_price=opportunity['no_ask_price'],
+                    size=merge_size,
+                    profit=realized_profit,
+                    success=True,
+                    total_cost=total_cost,
+                    recovered=recovered,
+                    profit_bps=opportunity['profit_bps']
+                )
+
                 print(f"\n{'🎉'*40}")
                 print(f"ARBITRAGE SUCCESSFUL!")
                 print(f"Profit: ${realized_profit:.2f} ({opportunity['profit_bps']:.1f}bp)")
@@ -363,9 +390,22 @@ class ArbitrageExecutor:
                 result['error'] = 'Merge failed'
                 result['positions_stuck'] = True
 
+                # Log failed merge
+                self.logger.log_arbitrage(
+                    market=opportunity['question'],
+                    yes_price=opportunity['yes_ask_price'],
+                    no_price=opportunity['no_ask_price'],
+                    size=merge_size,
+                    profit=0,
+                    success=False,
+                    error='Merge failed'
+                )
+
         else:
             # Partial fill - handle via risk manager
             result['error'] = 'Partial fill - needs rescue'
             result['partial_fill'] = True
+
+            self.logger.warning(f"Partial fill on {opportunity['question']}: YES={yes_pos}, NO={no_pos}")
 
         return result
