@@ -9,6 +9,7 @@ from poly_data.data_utils import update_markets, update_positions, update_orders
 from poly_data.websocket_handlers import connect_market_websocket, connect_user_websocket
 import poly_data.global_state as global_state
 from poly_data.data_processing import remove_from_performing
+from poly_utils.logging_utils import get_logger
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -203,19 +204,24 @@ async def main():
     """
     Main application entry point. Initializes client, data, and manages websocket connections.
     """
+    # Initialize logger
+    logger = get_logger('main')
+    global_state.logger = logger
+
     # Initialize client
     global_state.client = PolymarketClient()
-    
+
     # Initialize state and fetch initial data
     global_state.all_tokens = []
     update_once()
-    print("After initial updates: ", global_state.orders, global_state.positions)
+    logger.info(f"After initial updates - Orders: {len(global_state.orders)}, Positions: {len(global_state.positions)}")
 
     # Clean up any positions/orders on markets that are no longer being traded
     cleanup_inactive_markets()
 
-    print("\n")
-    print(f'There are {len(global_state.df)} market, {len(global_state.positions)} positions and {len(global_state.orders)} orders. Starting positions: {global_state.positions}')
+    logger.info("")
+    logger.info(f'There are {len(global_state.df)} markets, {len(global_state.positions)} positions and {len(global_state.orders)} orders.')
+    logger.debug(f'Starting positions: {global_state.positions}')
 
     # Start background update thread
     update_thread = threading.Thread(target=update_periodically, daemon=True)

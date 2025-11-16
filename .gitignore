@@ -8,6 +8,13 @@ credentials.json
 .env.*
 positions/
 
+# Logging directories
+logs/
+
+# User-specific configuration files
+neg_risk_arb/config.yaml
+neg_risk_arb/arb_history.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

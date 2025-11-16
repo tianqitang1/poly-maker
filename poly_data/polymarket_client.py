@@ -38,28 +38,39 @@ class PolymarketClient:
     The client connects to both the Polymarket API and the Polygon blockchain.
     """
     
-    def __init__(self, pk='default', use_near_sure=False) -> None:
+    def __init__(self, pk='default', use_near_sure=False, account_type='default') -> None:
         """
         Initialize the Polymarket client with API and blockchain connections.
 
         Args:
-            pk (str, optional): Private key identifier, defaults to 'default'
-            use_near_sure (bool, optional): If True, use NEAR_SURE_* env vars instead of default PK/BROWSER_ADDRESS
+            pk (str, optional): Legacy parameter, kept for backward compatibility
+            use_near_sure (bool, optional): Legacy parameter, use account_type instead
+            account_type (str): Account type - 'default', 'near_sure', or 'neg_risk_arb'
         """
         host="https://clob.polymarket.com"
 
-        # Get credentials from environment variables
-        if use_near_sure:
+        # Handle legacy use_near_sure parameter for backward compatibility
+        if use_near_sure and account_type == 'default':
+            account_type = 'near_sure'
+
+        # Get credentials based on account type
+        if account_type == 'near_sure':
             key = os.getenv("NEAR_SURE_PK")
             browser_address = os.getenv("NEAR_SURE_BROWSER_ADDRESS")
             print("Initializing Polymarket client for NEAR-SURE account...")
-        else:
+            env_prefix = "NEAR_SURE_"
+        elif account_type == 'neg_risk_arb':
+            key = os.getenv("NEG_RISK_ARB_PK")
+            browser_address = os.getenv("NEG_RISK_ARB_BROWSER_ADDRESS")
+            print("Initializing Polymarket client for NEG-RISK-ARB account...")
+            env_prefix = "NEG_RISK_ARB_"
+        else:  # default
             key = os.getenv("PK")
             browser_address = os.getenv("BROWSER_ADDRESS")
             print("Initializing Polymarket client...")
+            env_prefix = ""
 
         if not key or not browser_address:
-            env_prefix = "NEAR_SURE_" if use_near_sure else ""
             raise ValueError(
                 f"Missing environment variables: {env_prefix}PK and/or {env_prefix}BROWSER_ADDRESS. "
                 f"Please set them in your .env file."

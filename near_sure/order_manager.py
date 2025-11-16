@@ -16,14 +16,16 @@ class NearSureOrderManager:
     Places passive limit orders at existing bid prices near the midpoint.
     """
 
-    def __init__(self, client):
+    def __init__(self, client, logger=None):
         """
         Initialize the order manager.
 
         Args:
             client: PolymarketClient instance
+            logger: BotLogger instance (optional)
         """
         self.client = client
+        self.logger = logger
 
     def find_passive_bid_price(
         self,
@@ -182,7 +184,11 @@ class NearSureOrderManager:
                 }
 
             # Place the order
-            print("\nPlacing order...")
+            if self.logger:
+                self.logger.info(f"Placing BUY order for {side} @ ${price:.4f}, size: ${size:.2f}")
+            else:
+                print("\nPlacing order...")
+
             response = self.client.create_order(
                 marketId=token_id,
                 action='BUY',
@@ -194,9 +200,24 @@ class NearSureOrderManager:
             if response:
                 print("✓ Order placed successfully!")
                 print(f"Order ID: {response.get('orderID', 'N/A')}")
+
+                # Log order placement
+                if self.logger:
+                    self.logger.log_order(
+                        action='BUY',
+                        market=market['question'],
+                        token=token_id,
+                        price=price,
+                        size=size,
+                        order_id=response.get('orderID', 'N/A') if isinstance(response, dict) else 'N/A',
+                        side=side
+                    )
+
                 return response
             else:
                 print("❌ Order placement failed (empty response)")
+                if self.logger:
+                    self.logger.error(f"Order placement failed for {market['question']}")
                 return None
 
         except Exception as e:
