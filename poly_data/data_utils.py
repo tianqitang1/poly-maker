@@ -7,8 +7,12 @@ import poly_data.global_state as global_state
 def update_positions(avgOnly=False):
     pos_df = global_state.client.get_all_positions()
 
+    # Track which tokens are in the current API response
+    api_tokens = set()
+
     for idx, row in pos_df.iterrows():
         asset = str(row['asset'])
+        api_tokens.add(asset)
 
         if asset in  global_state.positions:
             position = global_state.positions[asset].copy()
@@ -62,8 +66,32 @@ def update_positions(avgOnly=False):
             if should_update and old_size != row['size']:
                 print(f"Updating position from {old_size} to {row['size']} and avgPrice to {row['avgPrice']} using API")
                 position['size'] = row['size']
-    
+
         global_state.positions[asset] = position
+
+    # Clear positions for tokens that are no longer in the API response
+    # This handles cases where positions were fully exited (sold completely)
+    if not avgOnly:
+        tokens_to_clear = []
+        for token in list(global_state.positions.keys()):
+            if token not in api_tokens and global_state.positions[token]['size'] > 0:
+                # Check if there are pending trades for this token
+                has_pending_trades = False
+                for col in [f"{token}_sell", f"{token}_buy"]:
+                    if col in global_state.performing and isinstance(global_state.performing[col], set) and len(global_state.performing[col]) > 0:
+                        has_pending_trades = True
+                        break
+
+                # Only clear if no pending trades (position was truly exited)
+                if not has_pending_trades:
+                    tokens_to_clear.append(token)
+
+        # Clear the positions
+        for token in tokens_to_clear:
+            old_size = global_state.positions[token]['size']
+            old_avg = global_state.positions[token]['avgPrice']
+            global_state.positions[token] = {'size': 0, 'avgPrice': 0}
+            print(f"✓ Cleared stale position for token {token}: was {old_size} @ {old_avg}, now 0 (not in API response)")
 
 def get_position(token):
     token = str(token)
