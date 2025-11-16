@@ -5,9 +5,9 @@ Handles atomic execution of arbitrage opportunities with partial fill protection
 """
 
 import time
-import yaml
 from typing import Dict, Optional, Tuple
 from datetime import datetime
+from neg_risk_arb.arbitrage_scanner import load_config
 
 
 class ArbitrageExecutor:
@@ -26,8 +26,7 @@ class ArbitrageExecutor:
         self.client = client
 
         # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        self.config = load_config(config_path)
 
     def validate_opportunity(self, opportunity: Dict) -> bool:
         """

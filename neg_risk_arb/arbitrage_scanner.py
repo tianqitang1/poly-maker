@@ -9,8 +9,32 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import yaml
+import os
 import warnings
 warnings.filterwarnings("ignore")
+
+
+def load_config(config_path='neg_risk_arb/config.yaml'):
+    """
+    Load configuration, falling back to .example if config.yaml doesn't exist.
+
+    Args:
+        config_path: Path to configuration file
+
+    Returns:
+        Configuration dictionary
+    """
+    if not os.path.exists(config_path):
+        example_path = config_path + '.example'
+        if os.path.exists(example_path):
+            print(f"Config file not found at {config_path}, using {example_path}")
+            print(f"Tip: Copy {example_path} to {config_path} to customize settings")
+            config_path = example_path
+        else:
+            raise FileNotFoundError(f"Neither {config_path} nor {example_path} found")
+
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
 
 
 class ArbitrageScanner:
@@ -29,8 +53,7 @@ class ArbitrageScanner:
         self.client = client
 
         # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        self.config = load_config(config_path)
 
     def get_all_markets(self) -> pd.DataFrame:
         """

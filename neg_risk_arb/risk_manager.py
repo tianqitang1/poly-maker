@@ -5,9 +5,9 @@ Handles partial fill scenarios and risk mitigation strategies.
 """
 
 import time
-import yaml
 from typing import Dict, Tuple
 from datetime import datetime
+from neg_risk_arb.arbitrage_scanner import load_config
 
 
 class ArbitrageRiskManager:
@@ -26,8 +26,7 @@ class ArbitrageRiskManager:
         self.client = client
 
         # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        self.config = load_config(config_path)
 
         # Track execution history
         self.execution_history = []
