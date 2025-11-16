@@ -1,0 +1,180 @@
+# Negative Risk Arbitrage Configuration
+# Adjust these parameters to optimize your arbitrage strategy
+
+# ============================================================================
+# PROFIT THRESHOLDS
+# ============================================================================
+
+# Minimum profit in basis points (100 bps = 1%)
+# Lower = more opportunities, but smaller profits
+# Higher = fewer opportunities, but larger profits
+min_profit_bps: 30  # 0.3% minimum profit
+
+# Maximum sum of YES + NO asks to consider
+# This accounts for fees and slippage
+# Default: 0.995 leaves 0.5% buffer
+max_total_cost: 0.995
+
+# ============================================================================
+# POSITION SIZING
+# ============================================================================
+
+# Maximum USDC to risk per arbitrage trade
+# Start small while testing, increase as you gain confidence
+max_position_size: 100
+
+# Minimum USDC per trade (must meet Polymarket minimums)
+min_position_size: 10
+
+# ============================================================================
+# LIQUIDITY REQUIREMENTS
+# ============================================================================
+
+# Minimum available liquidity on each side (in USDC)
+# Ensures there's enough size to execute without slippage
+min_liquidity_per_side: 50
+
+# Only consider markets where BOTH sides have at least this much liquidity
+# at the best ask price
+require_both_sides_liquid: true
+
+# ============================================================================
+# EXECUTION STRATEGY
+# ============================================================================
+
+# Order type: 'market' or 'limit'
+# 'market' = aggressive, immediate execution (recommended for arb)
+# 'limit' = passive, better prices but partial fill risk
+order_type: market
+
+# Delay between placing YES and NO orders (milliseconds)
+# 0 = simultaneous, 100-500 = slight delay
+# Lower is better for arbitrage, but may hit rate limits
+execution_delay_ms: 100
+
+# Timeout for order confirmation (seconds)
+# How long to wait for both orders to fill before handling partial fills
+confirmation_timeout_sec: 3
+
+# ============================================================================
+# PARTIAL FILL PROTECTION
+# ============================================================================
+
+# What to do if only one side fills
+# Options:
+#   'market_rescue': Immediately market order the other side (accept small loss)
+#   'limit_rescue': Place limit order and wait, then market if timeout
+#   'exit_position': Sell the filled side at market (take directional risk)
+partial_fill_strategy: market_rescue
+
+# Maximum loss to accept when rescuing a partial fill (as decimal)
+# If the other side would cost more than this, exit instead
+# Example: 0.01 = accept up to 1% loss to complete the arbitrage
+max_rescue_loss_pct: 0.01
+
+# Timeout for rescue attempt (seconds)
+# If using limit_rescue, how long to wait before switching to market
+rescue_timeout_sec: 5
+
+# ============================================================================
+# RISK MANAGEMENT
+# ============================================================================
+
+# Maximum number of concurrent arbitrage positions
+# Limits exposure if multiple arbs are in progress
+max_concurrent_positions: 3
+
+# Cooldown period after a failed arbitrage (seconds)
+# Prevents rapid repeated attempts on the same market
+failed_arb_cooldown_sec: 60
+
+# Maximum daily loss limit (USDC)
+# Stop trading if cumulative losses exceed this
+max_daily_loss: 50
+
+# Stop trading if win rate falls below this percentage
+# Example: 0.75 = stop if less than 75% of trades are profitable
+min_win_rate: 0.70
+
+# ============================================================================
+# MARKET FILTERING
+# ============================================================================
+
+# Only trade negative risk markets
+# (These are the ones where YES + NO can be < $1)
+require_neg_risk: true
+
+# Minimum hours until market closes
+# Avoid markets closing too soon
+min_hours_until_close: 1.0
+
+# Maximum hours until market closes
+# Focus on markets closing soon (more likely to have arb opportunities)
+# Set to null for no limit
+max_hours_until_close: 168  # 7 days
+
+# Exclude markets with certain keywords in the question
+# Example: ['test', 'demo', 'invalid']
+exclude_keywords: []
+
+# ============================================================================
+# SCANNING & AUTOMATION
+# ============================================================================
+
+# How often to scan for new opportunities (seconds)
+# Only used in 'auto' mode
+scan_interval_sec: 30
+
+# Maximum opportunities to show in scan mode
+max_opportunities_to_display: 10
+
+# Sort opportunities by:
+# 'profit' = highest profit first
+# 'liquidity' = highest liquidity first
+# 'closing_time' = soonest closing first
+sort_opportunities_by: profit
+
+# ============================================================================
+# MERGING
+# ============================================================================
+
+# Minimum position size to trigger merge (in shares)
+# Must match or exceed the Polymarket minimum
+min_merge_size: 20
+
+# Delay after orders fill before attempting merge (seconds)
+# Give the blockchain time to settle
+merge_delay_sec: 5
+
+# Maximum retries for merge operation
+max_merge_retries: 3
+
+# ============================================================================
+# LOGGING & NOTIFICATIONS
+# ============================================================================
+
+# Verbosity level: 'quiet', 'normal', 'verbose', 'debug'
+log_level: normal
+
+# Log successful arbitrages to file
+log_successful_arbs: true
+log_file: neg_risk_arb/arb_history.json
+
+# Show order book depth in scan results
+show_order_book_depth: false
+
+# ============================================================================
+# SAFETY FEATURES
+# ============================================================================
+
+# Require manual confirmation before each trade in 'trade' mode
+# Set to false for fully automated execution
+require_confirmation: true
+
+# Maximum slippage tolerance (as decimal)
+# Reject if actual execution price differs from expected by more than this
+max_slippage_tolerance: 0.005  # 0.5%
+
+# Dry run mode (for testing without real trades)
+# Overridden by --dry-run flag
+default_dry_run: false
