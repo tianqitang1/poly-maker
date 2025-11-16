@@ -74,14 +74,35 @@ class ArbitrageScanner:
                     markets = self.client.client.get_sampling_markets(next_cursor=cursor)
 
                 markets_df = pd.DataFrame(markets['data'])
-                cursor = markets['next_cursor']
+
+                # Check if we got any data
+                if markets_df.empty:
+                    break
+
                 all_markets.append(markets_df)
+
+                # Get next cursor
+                cursor = markets.get('next_cursor')
 
                 if cursor is None:
                     break
+
             except Exception as e:
-                print(f"Error fetching markets: {e}")
-                break
+                # Check if this is just the end-of-pagination error
+                error_msg = str(e)
+                if 'next item should be greater than or equal to 0' in error_msg or '400' in error_msg:
+                    # This is likely the end of pagination - not a real error
+                    if all_markets:
+                        # We already have data, so this is fine
+                        break
+                    else:
+                        # No data yet, this is a real problem
+                        print(f"Error fetching markets: {e}")
+                        break
+                else:
+                    # Some other error
+                    print(f"Error fetching markets: {e}")
+                    break
 
         if not all_markets:
             return pd.DataFrame()
