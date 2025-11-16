@@ -62,12 +62,17 @@ class ArbitrageScanner:
         Returns:
             DataFrame with all markets
         """
-        cursor = ""
+        cursor = None
         all_markets = []
 
         while True:
             try:
-                markets = self.client.client.get_sampling_markets(next_cursor=cursor)
+                # Only pass next_cursor if we have one (not on first call)
+                if cursor is None:
+                    markets = self.client.client.get_sampling_markets()
+                else:
+                    markets = self.client.client.get_sampling_markets(next_cursor=cursor)
+
                 markets_df = pd.DataFrame(markets['data'])
                 cursor = markets['next_cursor']
                 all_markets.append(markets_df)
