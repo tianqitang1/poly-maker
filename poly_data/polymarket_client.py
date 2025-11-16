@@ -92,9 +92,11 @@ class PolymarketClient:
         # Set up API credentials
         self.creds = self.client.create_or_derive_api_creds()
         self.client.set_api_creds(creds=self.creds)
-        
-        # Initialize Web3 connection to Polygon
-        web3 = Web3(Web3.HTTPProvider("https://polygon-rpc.com"))
+
+        # Initialize Web3 connection to Polygon with proxy support
+        from poly_utils.proxy_config import get_web3_provider_with_proxy
+        provider = get_web3_provider_with_proxy("https://polygon-rpc.com")
+        web3 = Web3(provider)
         web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         
         # Set up USDC contract for balance checks
@@ -188,11 +190,13 @@ class PolymarketClient:
     def get_pos_balance(self):
         """
         Get the total value of all positions for the connected wallet.
-        
+
         Returns:
             float: Total position value in USDC
         """
-        res = requests.get(f'https://data-api.polymarket.com/value?user={self.browser_wallet}')
+        from poly_utils.proxy_config import get_proxy_session
+        session = get_proxy_session()
+        res = session.get(f'https://data-api.polymarket.com/value?user={self.browser_wallet}')
         return float(res.json()['value'])
 
     def get_total_balance(self):
@@ -207,11 +211,13 @@ class PolymarketClient:
     def get_all_positions(self):
         """
         Get all positions for the connected wallet across all markets.
-        
+
         Returns:
             DataFrame: All positions with details like market, size, avgPrice
         """
-        res = requests.get(f'https://data-api.polymarket.com/positions?user={self.browser_wallet}')
+        from poly_utils.proxy_config import get_proxy_session
+        session = get_proxy_session()
+        res = session.get(f'https://data-api.polymarket.com/positions?user={self.browser_wallet}')
         return pd.DataFrame(res.json())
     
     def get_raw_position(self, tokenId):

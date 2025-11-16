@@ -10,9 +10,14 @@ from poly_data.websocket_handlers import connect_market_websocket, connect_user_
 import poly_data.global_state as global_state
 from poly_data.data_processing import remove_from_performing
 from poly_utils.logging_utils import get_logger
+from poly_utils.proxy_config import setup_proxy
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Setup proxy configuration BEFORE initializing any API clients
+# This ensures all HTTP/HTTPS requests go through the proxy
+setup_proxy(verbose=True)
 
 def update_once():
     """

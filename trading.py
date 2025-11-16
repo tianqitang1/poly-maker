@@ -4,6 +4,7 @@ import json                     # JSON handling
 import asyncio                  # Asynchronous I/O
 import traceback                # Exception handling
 import pandas as pd             # Data analysis library
+import numpy as np              # Numerical Python
 import math                     # Mathematical functions
 
 import poly_data.global_state as global_state
@@ -16,6 +17,31 @@ from poly_data.data_utils import get_position, get_order, set_position
 # Create directory for storing position risk information
 if not os.path.exists('positions/'):
     os.makedirs('positions/')
+
+def convert_to_serializable(obj):
+    """
+    Convert numpy/pandas types to native Python types for JSON serialization.
+
+    Args:
+        obj: Any object that might contain numpy/pandas types
+
+    Returns:
+        Object with all numpy/pandas types converted to native Python types
+    """
+    if isinstance(obj, dict):
+        return {key: convert_to_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_serializable(item) for item in obj]
+    elif isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif hasattr(obj, 'item'):  # pandas types
+        return obj.item()
+    else:
+        return obj
 
 def send_buy_order(order, logger=None):
     """
@@ -560,7 +586,9 @@ async def perform_trade(market, logger=None):
                         client.cancel_all_market(market)
 
                         # Save risk details to file
-                        open(fname, 'w').write(json.dumps(risk_details))
+                        # Convert numpy/pandas types to native Python types for JSON serialization
+                        serializable_risk_details = convert_to_serializable(risk_details)
+                        open(fname, 'w').write(json.dumps(serializable_risk_details))
                         continue
 
                 # ------- BUY ORDER LOGIC -------

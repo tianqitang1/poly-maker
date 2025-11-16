@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+import numpy as np
 
 
 class BotLogger:
@@ -269,12 +270,40 @@ class BotLogger:
             self.warning(f"ARBITRAGE FAILED: {market[:50]} | {extra.get('error', 'Unknown error')}")
         self._append_to_json_log(event)
 
+    def _convert_to_serializable(self, obj):
+        """
+        Convert numpy/pandas types to native Python types for JSON serialization.
+
+        Args:
+            obj: Any object that might contain numpy/pandas types
+
+        Returns:
+            Object with all numpy/pandas types converted to native Python types
+        """
+        if isinstance(obj, dict):
+            return {key: self._convert_to_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._convert_to_serializable(item) for item in obj]
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif hasattr(obj, 'item'):  # pandas types
+            return obj.item()
+        else:
+            return obj
+
     def _append_to_json_log(self, event: Dict):
         """Append event to JSON log file."""
         json_log = self.bot_log_dir / f"{self.bot_name}_events.jsonl"
 
+        # Convert numpy/pandas types to native Python types
+        serializable_event = self._convert_to_serializable(event)
+
         with open(json_log, 'a') as f:
-            f.write(json.dumps(event) + '\n')
+            f.write(json.dumps(serializable_event) + '\n')
 
     def generate_daily_summary(self) -> Dict:
         """
