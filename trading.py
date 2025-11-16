@@ -17,7 +17,7 @@ from poly_data.data_utils import get_position, get_order, set_position
 if not os.path.exists('positions/'):
     os.makedirs('positions/')
 
-def send_buy_order(order):
+def send_buy_order(order, logger=None):
     """
     Create a BUY order for a specific token.
 
@@ -28,7 +28,12 @@ def send_buy_order(order):
 
     Args:
         order (dict): Order details including token, price, size, and market parameters
+        logger: BotLogger instance (optional)
     """
+    # Get logger from global state if not provided
+    if logger is None and hasattr(global_state, 'logger'):
+        logger = global_state.logger
+
     client = global_state.client
 
     # Safety check: get current position and ensure order won't exceed max_size
@@ -76,16 +81,30 @@ def send_buy_order(order):
     if trade:
         # Only place orders with prices between 0.1 and 0.9 to avoid extreme positions
         if order['price'] >= 0.1 and order['price'] < 0.9:
-            print(f'Creating new order for {order["size"]} at {order["price"]}')
-            print(order['token'], 'BUY', order['price'], order['size'])
+            if logger:
+                logger.info(f'Creating BUY order for {order["size"]} at {order["price"]}')
+            else:
+                print(f'Creating new order for {order["size"]} at {order["price"]}')
+                print(order['token'], 'BUY', order['price'], order['size'])
             try:
-                client.create_order(
+                response = client.create_order(
                     order['token'],
                     'BUY',
                     order['price'],
                     order['size'],
                     True if order['neg_risk'] == 'TRUE' else False
                 )
+
+                # Log order placement
+                if logger and response:
+                    logger.log_order(
+                        action='BUY',
+                        market=order['row']['question'],
+                        token=str(order['token']),
+                        price=order['price'],
+                        size=order['size'],
+                        order_id=response.get('orderID', 'N/A') if isinstance(response, dict) else 'N/A'
+                    )
             except Exception as ex:
                 # Check if this is a balance/allowance error (not enough funds)
                 error_msg = str(ex).lower()
@@ -100,17 +119,22 @@ def send_buy_order(order):
         print(f'Not creating new order because order price of {order["price"]} is less than incentive start price of {incentive_start}. Mid price is {order["mid_price"]}')
 
 
-def send_sell_order(order):
+def send_sell_order(order, logger=None):
     """
     Create a SELL order for a specific token.
-    
+
     This function:
     1. Cancels any existing orders for the token
     2. Creates a new sell order with the specified parameters
-    
+
     Args:
         order (dict): Order details including token, price, size, and market parameters
+        logger: BotLogger instance (optional)
     """
+    # Get logger from global state if not provided
+    if logger is None and hasattr(global_state, 'logger'):
+        logger = global_state.logger
+
     client = global_state.client
 
     # Only cancel existing orders if we need to make significant changes
@@ -134,15 +158,29 @@ def send_sell_order(order):
         print(f"Keeping existing sell orders - minor changes: price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         return  # Don't place new order if existing one is fine
 
-    print(f'Creating new order for {order["size"]} at {order["price"]}')
+    if logger:
+        logger.info(f'Creating SELL order for {order["size"]} at {order["price"]}')
+    else:
+        print(f'Creating new order for {order["size"]} at {order["price"]}')
     try:
-        client.create_order(
+        response = client.create_order(
             order['token'],
             'SELL',
             order['price'],
             order['size'],
             True if order['neg_risk'] == 'TRUE' else False
         )
+
+        # Log order placement
+        if logger and response:
+            logger.log_order(
+                action='SELL',
+                market=order['row']['question'],
+                token=str(order['token']),
+                price=order['price'],
+                size=order['size'],
+                order_id=response.get('orderID', 'N/A') if isinstance(response, dict) else 'N/A'
+            )
     except Exception as ex:
         # Check if this is a balance/allowance error (position already sold)
         error_msg = str(ex).lower()
@@ -167,19 +205,24 @@ def send_sell_order(order):
 # Dictionary to store locks for each market to prevent concurrent trading on the same market
 market_locks = {}
 
-async def perform_trade(market):
+async def perform_trade(market, logger=None):
     """
     Main trading function that handles market making for a specific market.
-    
+
     This function:
     1. Merges positions when possible to free up capital
     2. Analyzes the market to determine optimal bid/ask prices
     3. Manages buy and sell orders based on position size and market conditions
     4. Implements risk management with stop-loss and take-profit logic
-    
+
     Args:
         market (str): The market ID to trade on
+        logger: BotLogger instance (optional, will use global_state.logger if available)
     """
+    # Get logger from global state if not provided
+    if logger is None and hasattr(global_state, 'logger'):
+        logger = global_state.logger
+
     # Create a lock for this market if it doesn't exist
     if market not in market_locks:
         market_locks[market] = asyncio.Lock()
@@ -193,22 +236,28 @@ async def perform_trade(market):
 
             # Check if market exists in configuration
             if market_df.empty:
-                print(f"Warning: Market {market} not found in configuration dataframe. Skipping trade.")
+                if logger:
+                    logger.warning(f"Market {market} not found in configuration dataframe. Skipping trade.")
+                else:
+                    print(f"Warning: Market {market} not found in configuration dataframe. Skipping trade.")
                 return
 
-            row = market_df.iloc[0]      
+            row = market_df.iloc[0]
             # Determine decimal precision from tick size
             round_length = len(str(row['tick_size']).split(".")[1])
 
             # Get trading parameters for this market type
             params = global_state.params[row['param_type']]
-            
+
             # Create a list with both outcomes for the market
             deets = [
-                {'name': 'token1', 'token': row['token1'], 'answer': row['answer1']}, 
+                {'name': 'token1', 'token': row['token1'], 'answer': row['answer1']},
                 {'name': 'token2', 'token': row['token2'], 'answer': row['answer2']}
             ]
-            print(f"\n\n{pd.Timestamp.utcnow().tz_localize(None)}: {row['question']}")
+            if logger:
+                logger.info(f"\n{pd.Timestamp.utcnow().tz_localize(None)}: {row['question']}")
+            else:
+                print(f"\n\n{pd.Timestamp.utcnow().tz_localize(None)}: {row['question']}")
 
             # Get current positions for both outcomes
             pos_1 = get_position(row['token1'])['size']
@@ -227,12 +276,26 @@ async def perform_trade(market):
                 scaled_amt = amount_to_merge / 10**6
 
                 if scaled_amt > CONSTANTS.MIN_MERGE_SIZE:
-                    print(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}. Merging positions")
+                    if logger:
+                        logger.info(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}. Merging positions")
+                    else:
+                        print(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}. Merging positions")
+
                     # Execute the merge operation (works with Gnosis Safe wallets)
                     client.merge_positions(amount_to_merge, market, row['neg_risk'] == 'TRUE')
+
                     # Update our local position tracking
                     set_position(row['token1'], 'SELL', scaled_amt, 0, 'merge')
                     set_position(row['token2'], 'SELL', scaled_amt, 0, 'merge')
+
+                    # Log merge
+                    if logger:
+                        logger.log_merge(
+                            market=row['question'],
+                            size=scaled_amt,
+                            recovered=scaled_amt,
+                            condition_id=market
+                        )
                     
             # ------- TRADING LOGIC FOR EACH OUTCOME -------
             # Loop through both outcomes in the market (YES and NO)
@@ -389,18 +452,40 @@ async def perform_trade(market):
                     if (pnl < params['stop_loss_threshold'] and spread <= params['spread_threshold']) or row['3_hour'] > params['volatility_threshold']:
                         risk_details['msg'] = (f"Selling {pos_to_sell} because spread is {spread} and pnl is {pnl} "
                                               f"and ratio is {ratio} and 3 hour volatility is {row['3_hour']}")
-                        print("Stop loss Triggered: ", risk_details['msg'])
+
+                        if logger:
+                            logger.warning(f"Stop loss Triggered: {risk_details['msg']}")
+                        else:
+                            print("Stop loss Triggered: ", risk_details['msg'])
 
                         # Sell at market best bid to ensure execution
                         order['size'] = pos_to_sell
                         order['price'] = n_deets['best_bid']
 
                         # Set period to avoid trading after stop-loss
-                        risk_details['sleep_till'] = str(pd.Timestamp.utcnow().tz_localize(None) + 
+                        risk_details['sleep_till'] = str(pd.Timestamp.utcnow().tz_localize(None) +
                                                         pd.Timedelta(hours=params['sleep_period']))
 
-                        print("Risking off")
-                        send_sell_order(order)
+                        # Calculate PnL in dollars
+                        pnl_dollars = (mid_price - avgPrice) * pos_to_sell
+
+                        # Log stop loss
+                        if logger:
+                            logger.log_stop_loss(
+                                market=row['question'],
+                                position=pos_to_sell,
+                                entry_price=avgPrice,
+                                exit_price=n_deets['best_bid'],
+                                pnl=pnl_dollars,
+                                reason=f"PnL: {pnl:.2f}%, Spread: {spread:.4f}, Volatility: {row['3_hour']:.2f}"
+                            )
+
+                        if logger:
+                            logger.info("Risking off - selling position and cancelling all orders")
+                        else:
+                            print("Risking off")
+
+                        send_sell_order(order, logger)
                         client.cancel_all_market(market)
 
                         # Save risk details to file
@@ -486,15 +571,15 @@ async def perform_trade(market):
                                 if best_bid > orders['buy']['price']:
                                     print(f"Sending Buy Order for {token} because better price. "
                                           f"Orders look like this: {orders['buy']}. Best Bid: {best_bid}")
-                                    send_buy_order(order)
+                                    send_buy_order(order, logger)
                                 # 2. Current position + orders is not enough to reach max_size
                                 elif position + orders['buy']['size'] < 0.95 * max_size:
                                     print(f"Sending Buy Order for {token} because not enough position + size")
-                                    send_buy_order(order)
+                                    send_buy_order(order, logger)
                                 # 3. Our current order is too large and needs to be resized
                                 elif orders['buy']['size'] > order['size'] * 1.01:
                                     print(f"Resending buy orders because open orders are too large")
-                                    send_buy_order(order)
+                                    send_buy_order(order, logger)
                                 # Commented out logic for cancelling orders when market conditions change
                                 # elif best_bid_size < orders['buy']['size'] * 0.98 and abs(best_bid - second_best_bid) > 0.03:
                                 #     print(f"Cancelling buy orders because best size is less than 90% of open orders and spread is too large")
@@ -574,17 +659,17 @@ async def perform_trade(market):
                     if diff > 2:
                         print(f"Sending Sell Order for {token} because current order price of "
                               f"{order_price} is deviant from target price of {target_price} and diff is {diff:.1f}%")
-                        send_sell_order(order)
+                        send_sell_order(order, logger)
                     # 2. Current order size is too small for our position
                     elif orders['sell']['size'] < position * 0.97:
                         print(f"Sending Sell Order for {token} because not enough sell size. "
                               f"Position: {position}, Sell Size: {orders['sell']['size']}")
-                        send_sell_order(order)
+                        send_sell_order(order, logger)
                     # 3. Market is trending up and we should move price higher
                     elif market_trend == 'up' and order_price < target_price - row['tick_size']:
                         print(f"Sending Sell Order for {token} to raise price as market trends up. "
                               f"Current: {order_price}, Target: {target_price}")
-                        send_sell_order(order)
+                        send_sell_order(order, logger)
                     
                     # Commented out additional conditions for updating sell orders
                     # elif orders['sell']['price'] < ask_price:

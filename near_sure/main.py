@@ -27,6 +27,7 @@ from near_sure.market_scanner import NearSureMarketScanner
 from near_sure.interactive_ui import InteractiveMarketSelector
 from near_sure.order_manager import NearSureOrderManager
 from near_sure.risk_manager import NearSureRiskManager
+from poly_utils.logging_utils import get_logger
 
 
 def trade_mode(dry_run: bool = False):
@@ -42,13 +43,16 @@ def trade_mode(dry_run: bool = False):
     print(f"{'='*80}\n")
 
     try:
+        # Initialize logger
+        logger = get_logger('near_sure')
+
         # Initialize client with near-sure credentials
         client = PolymarketClient(use_near_sure=True)
 
         # Initialize components
         scanner = NearSureMarketScanner(client)
         ui = InteractiveMarketSelector(scanner)
-        order_manager = NearSureOrderManager(client)
+        order_manager = NearSureOrderManager(client, logger=logger)
 
         # Run interactive session
         configured_trades = ui.run_interactive_session()
@@ -114,13 +118,17 @@ def monitor_mode(
     print(f"{'='*80}\n")
 
     try:
+        # Initialize logger
+        logger = get_logger('near_sure')
+
         # Initialize client with near-sure credentials
         client = PolymarketClient(use_near_sure=True)
 
         # Initialize risk manager
         risk_manager = NearSureRiskManager(
             client=client,
-            stop_loss_pct=stop_loss_pct
+            stop_loss_pct=stop_loss_pct,
+            logger=logger
         )
 
         # Start continuous monitoring

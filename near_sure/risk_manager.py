@@ -17,17 +17,19 @@ class NearSureRiskManager:
     Monitors all positions and implements stop-loss protection.
     """
 
-    def __init__(self, client, stop_loss_pct: float = -0.10):
+    def __init__(self, client, stop_loss_pct: float = -0.10, logger=None):
         """
         Initialize the risk manager.
 
         Args:
             client: PolymarketClient instance
             stop_loss_pct: Stop loss percentage (e.g., -0.10 for -10%)
+            logger: BotLogger instance (optional)
         """
         self.client = client
         self.stop_loss_pct = stop_loss_pct
         self.positions_cache = {}
+        self.logger = logger
 
     def get_all_positions(self) -> pd.DataFrame:
         """
@@ -132,30 +134,41 @@ class NearSureRiskManager:
             size = position_pnl['size']
             current_price = position_pnl['current_price']
 
-            print(f"\n{'!'*80}")
-            print(f"STOP LOSS TRIGGERED")
-            print(f"{'!'*80}")
-            print(f"Market: {position_pnl['market']}")
-            print(f"Token ID: {token_id}")
-            print(f"Size: {size:.2f}")
-            print(f"Entry Price: {position_pnl['avg_price']:.4f}")
-            print(f"Current Price: {current_price:.4f}")
-            print(f"PnL: ${position_pnl['unrealized_pnl']:.2f} ({position_pnl['pnl_pct']*100:.2f}%)")
-            print(f"Stop Loss Threshold: {self.stop_loss_pct*100:.2f}%")
-            print(f"{'!'*80}")
+            if self.logger:
+                self.logger.warning(f"STOP LOSS TRIGGERED - Market: {position_pnl['market']}, "
+                                   f"PnL: ${position_pnl['unrealized_pnl']:.2f} ({position_pnl['pnl_pct']*100:.2f}%)")
+            else:
+                print(f"\n{'!'*80}")
+                print(f"STOP LOSS TRIGGERED")
+                print(f"{'!'*80}")
+                print(f"Market: {position_pnl['market']}")
+                print(f"Token ID: {token_id}")
+                print(f"Size: {size:.2f}")
+                print(f"Entry Price: {position_pnl['avg_price']:.4f}")
+                print(f"Current Price: {current_price:.4f}")
+                print(f"PnL: ${position_pnl['unrealized_pnl']:.2f} ({position_pnl['pnl_pct']*100:.2f}%)")
+                print(f"Stop Loss Threshold: {self.stop_loss_pct*100:.2f}%")
+                print(f"{'!'*80}")
 
             if dry_run:
                 print("[DRY RUN] Stop loss not executed")
                 return True
 
             # Cancel any existing orders for this token first
-            print(f"Cancelling existing orders for token {token_id}...")
+            if self.logger:
+                self.logger.info(f"Cancelling existing orders for token {token_id}")
+            else:
+                print(f"Cancelling existing orders for token {token_id}...")
+
             self.client.cancel_all_asset(token_id)
             time.sleep(0.5)
 
             # Sell at best bid (market order)
             # We use best bid price to ensure immediate execution
-            print(f"Placing market sell order at {current_price:.4f}...")
+            if self.logger:
+                self.logger.info(f"Placing market SELL order at {current_price:.4f}")
+            else:
+                print(f"Placing market sell order at {current_price:.4f}...")
 
             # Note: We need to determine if it's a neg_risk market
             # For simplicity, try regular first, then neg_risk if it fails
@@ -173,9 +186,23 @@ class NearSureRiskManager:
 
             if response:
                 print("✓ Stop loss executed successfully!")
+
+                # Log stop loss
+                if self.logger:
+                    self.logger.log_stop_loss(
+                        market=position_pnl['market'],
+                        position=size,
+                        entry_price=position_pnl['avg_price'],
+                        exit_price=current_price,
+                        pnl=position_pnl['unrealized_pnl'],
+                        reason=f"PnL: {position_pnl['pnl_pct']*100:.2f}% below threshold {self.stop_loss_pct*100:.2f}%"
+                    )
+
                 return True
             else:
                 print("❌ Stop loss execution failed")
+                if self.logger:
+                    self.logger.error(f"Stop loss execution failed for {position_pnl['market']}")
                 return False
 
         except Exception as e:
