@@ -1,10 +1,11 @@
 """
-Market Scanner for Spike Momentum Bot - FIXED VERSION
+Market Scanner for Spike Momentum Bot - ENHANCED VERSION
 
-Fixes:
-1. Word boundary matching for keywords (no more "nba" in "Coinbase")
-2. Uses CLOB API tag filtering (if available)
-3. Better sports market detection
+Features:
+1. Proper pagination handling (fetches ALL available markets)
+2. sportsMarketType-based filtering (moneyline markets only)
+3. Keyword-based fallback with word boundary matching
+4. Filters out spread/over-under/total markets
 """
 
 import asyncio
@@ -205,11 +206,14 @@ class MarketScanner:
         return sports_markets
 
     def _fetch_all_markets_and_filter(self, limit: int) -> List[Dict[str, Any]]:
-        """Fallback: fetch all markets and filter manually."""
+        """Fallback: fetch all markets and filter manually with proper pagination."""
         cursor = ""
         all_markets = []
+        iterations = 0
+        max_iterations = 50  # Safety limit to prevent infinite loops
 
-        while len(all_markets) < limit * 5:  # Fetch more since we'll filter
+        # Fetch ALL markets using pagination (like update_markets.py does)
+        while iterations < max_iterations:
             try:
                 response = self.client.client.get_sampling_markets(next_cursor=cursor)
                 markets_data = response.get('data', [])
@@ -223,41 +227,95 @@ class MarketScanner:
                 if cursor is None:
                     break
 
+                iterations += 1
+
             except Exception as e:
-                logger.error(f"Error fetching markets batch: {e}")
+                # API sometimes fails with bad cursor after exhausting markets
+                # This is expected behavior at the end of pagination
+                logger.debug(f"Pagination ended (fetched {len(all_markets)} markets): {e}")
                 break
 
         logger.info(f"Fetched {len(all_markets)} total markets")
 
-        # Filter for sports markets
+        # Filter for sports markets (moneyline only)
         sports_markets = []
+        moneyline_count = 0
+        filtered_count = 0
+
         for market in all_markets:
+            # Check for sportsMarketType in events
+            events = market.get('events', [])
+            if events and len(events) > 0:
+                event = events[0]
+                sports_type = event.get('sportsMarketType')
+                if sports_type:
+                    if sports_type.lower() == 'moneyline':
+                        moneyline_count += 1
+                    else:
+                        filtered_count += 1
+
             if self._is_sports_market(market):
                 sports_markets.append(market)
 
         logger.info(f"Found {len(sports_markets)} sports markets after filtering")
+        if moneyline_count > 0:
+            logger.info(f"  ├─ {moneyline_count} moneyline markets (via sportsMarketType)")
+        if filtered_count > 0:
+            logger.info(f"  ├─ {filtered_count} non-moneyline sports markets (filtered out)")
+        if len(sports_markets) > moneyline_count:
+            logger.info(f"  └─ {len(sports_markets) - moneyline_count} markets (via keyword matching)")
+
         return sports_markets
 
     def _is_sports_market(self, market: Dict[str, Any]) -> bool:
-        """Check if market is sports-related using word boundaries."""
+        """
+        Check if market is sports-related using sportsMarketType (preferred) or keywords.
+
+        Only accepts moneyline markets for simplicity.
+        """
+        # PRIORITY 1: Check for sportsMarketType field (most reliable!)
+        # This field indicates real sports markets and their type
+        events = market.get('events', [])
+        if events and len(events) > 0:
+            event = events[0]
+            sports_market_type = event.get('sportsMarketType')
+
+            if sports_market_type:
+                # Only trade moneyline markets (most straightforward)
+                if sports_market_type.lower() == 'moneyline':
+                    logger.debug(f"Found moneyline sports market: {market.get('question', '')[:50]}...")
+                    return True
+                else:
+                    # Skip spreads, over/under, parlays, etc.
+                    logger.debug(f"Skipping non-moneyline sports market ({sports_market_type}): {market.get('question', '')[:50]}...")
+                    return False
+
+        # FALLBACK: Use keyword-based detection if sportsMarketType not available
         question = market.get('question', '').lower()
         category = market.get('category', '').lower()
         tags = market.get('tags', [])
-        tags_str = ' '.join(tags).lower() if tags else ''
 
-        # First check category (most reliable)
+        # Check category (most reliable fallback)
         if category in self.SPORTS_CATEGORIES:
+            # Additional check: avoid spread/over-under markets in keywords
+            if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
+                logger.debug(f"Skipping spread/total market: {market.get('question', '')[:50]}...")
+                return False
             return True
 
         # Check tags
         if tags:
             for tag in tags:
                 if tag.lower() in self.SPORTS_TAGS:
+                    if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
+                        return False
                     return True
 
         # Check question with word boundary patterns
         for pattern in self.keyword_patterns:
             if pattern.search(question):
+                if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
+                    return False
                 return True
 
         return False
