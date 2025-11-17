@@ -198,9 +198,13 @@ class OpenAIProvider(BaseLLMProvider):
             kwargs = {
                 'model': self.model,
                 'messages': [{"role": "user", "content": prompt}],
-                'temperature': 0.3,
                 'max_completion_tokens': 1024,  # Updated from max_tokens for new API
             }
+
+            # Some models (like gpt-5-nano) don't support custom temperature
+            # Only add temperature for models that support it
+            if 'nano' not in self.model.lower() and 'o1' not in self.model.lower():
+                kwargs['temperature'] = 0.3
 
             if json_mode:
                 kwargs['response_format'] = {"type": "json_object"}
