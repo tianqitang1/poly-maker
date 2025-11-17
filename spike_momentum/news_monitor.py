@@ -3,18 +3,25 @@ Sports News Monitor
 
 Fetches news from multiple free sources:
 - ESPN RSS feeds (by sport)
-- TheScore RSS feeds
+- TheScore RSS feeds (currently disabled - feeds are broken)
 - Google News RSS (with keywords)
 
 No API keys required - all free RSS feeds.
+
+IMPORTANT: RSS feeds are inherently limited to recent items (usually last few hours/days).
+You CANNOT backfill older news from RSS - this is a fundamental limitation of the format.
+For historical news, you would need paid API services like NewsAPI, SportsData.io, etc.
 """
 
 import feedparser
 import time
 import re
+import json
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from urllib.parse import quote
+from pathlib import Path
 
 from poly_utils.logging_utils import get_logger
 
@@ -95,6 +102,14 @@ class SportsNewsMonitor:
         self.seen_links = set()
         self.news_cache = []  # Recent news items
 
+        # Persistent cache file
+        self.cache_dir = Path('.cache')
+        self.cache_dir.mkdir(exist_ok=True)
+        self.cache_file = self.cache_dir / 'news_cache.json'
+
+        # Load cache from disk
+        self._load_cache()
+
         logger.info(f"Initialized SportsNewsMonitor (enabled={self.enabled})")
 
     def fetch_news(self, max_items: int = 100) -> List[NewsItem]:
@@ -117,8 +132,8 @@ class SportsNewsMonitor:
             espn_leagues = self.sources_config.get('espn_rss', {}).get('leagues', ['nfl', 'nba'])
             all_items.extend(self._fetch_espn(espn_leagues))
 
-        # Fetch from TheScore
-        if self.sources_config.get('thescore_rss', {}).get('enabled', True):
+        # Fetch from TheScore (disabled by default - RSS feeds are broken)
+        if self.sources_config.get('thescore_rss', {}).get('enabled', False):
             score_leagues = self.sources_config.get('thescore_rss', {}).get('leagues', ['nfl', 'nba'])
             all_items.extend(self._fetch_thescore(score_leagues))
 
@@ -144,6 +159,9 @@ class SportsNewsMonitor:
 
         # Update cache
         self.news_cache = unique_items[:max_items]
+
+        # Save cache to disk
+        self._save_cache()
 
         logger.info(f"Fetched {len(unique_items)} news items (showing {min(len(unique_items), max_items)})")
 
@@ -305,25 +323,55 @@ class SportsNewsMonitor:
         # Extract potential keywords from market question
         keywords = self._extract_keywords(market_question)
 
+        # Detect sport type from question
+        question_lower = market_question.lower()
+        detected_sport = None
+        for sport in ['nfl', 'nba', 'mlb', 'nhl', 'ncaaf', 'ncaab', 'soccer']:
+            if sport in question_lower:
+                detected_sport = sport.upper()
+                break
+
+        # Also check for team/league names
+        if not detected_sport:
+            if any(term in question_lower for term in ['lakers', 'warriors', 'celtics', 'heat', 'bulls', 'knicks']):
+                detected_sport = 'NBA'
+            elif any(term in question_lower for term in ['chiefs', 'bills', 'cowboys', 'patriots', '49ers']):
+                detected_sport = 'NFL'
+            elif any(term in question_lower for term in ['yankees', 'dodgers', 'red sox', 'mets']):
+                detected_sport = 'MLB'
+
         if not keywords:
             return []
 
-        # Search for matching news
-        matching_news = self.search_news(keywords, max_results=max_results)
+        # First, try to find sport-matching news
+        sport_matching_news = []
+        other_news = []
 
-        # Calculate relevance scores (simple keyword matching)
-        results = []
-        for item in matching_news:
-            score = self._calculate_relevance(item, keywords)
+        for item in self.news_cache:
+            # Calculate relevance
+            score = self._calculate_relevance(item, keywords, detected_sport)
 
-            results.append({
-                'news': item,
-                'relevance_score': score,
-                'matched_keywords': self._get_matched_keywords(item, keywords)
-            })
+            if score > 0:
+                match_data = {
+                    'news': item,
+                    'relevance_score': score,
+                    'matched_keywords': self._get_matched_keywords(item, keywords)
+                }
 
-        # Sort by relevance
-        results.sort(key=lambda x: x['relevance_score'], reverse=True)
+                # Prioritize news from matching sport
+                if detected_sport and item.sport == detected_sport:
+                    sport_matching_news.append(match_data)
+                else:
+                    other_news.append(match_data)
+
+        # Sort both lists by relevance
+        sport_matching_news.sort(key=lambda x: x['relevance_score'], reverse=True)
+        other_news.sort(key=lambda x: x['relevance_score'], reverse=True)
+
+        # Prioritize sport matches, then add others if needed
+        results = sport_matching_news[:max_results]
+        if len(results) < max_results:
+            results.extend(other_news[:max_results - len(results)])
 
         return results
 
@@ -345,7 +393,7 @@ class SportsNewsMonitor:
 
         return list(set(keywords))  # Remove duplicates
 
-    def _calculate_relevance(self, item: NewsItem, keywords: List[str]) -> float:
+    def _calculate_relevance(self, item: NewsItem, keywords: List[str], detected_sport: Optional[str] = None) -> float:
         """Calculate relevance score (0-1) for a news item."""
         # Combine title and summary for scoring
         text = (item.title + ' ' + item.summary).lower()
@@ -364,6 +412,10 @@ class SportsNewsMonitor:
         if title_matches > 0:
             score += 0.2  # Bonus for title match
 
+        # MAJOR BOOST for sport match (this is the key fix!)
+        if detected_sport and item.sport == detected_sport:
+            score += 0.5  # Strong bonus for matching sport
+
         # Cap at 1.0
         return min(score, 1.0)
 
@@ -372,10 +424,62 @@ class SportsNewsMonitor:
         text = (item.title + ' ' + item.summary).lower()
         return [kw for kw in keywords if kw in text]
 
+    def _load_cache(self):
+        """Load news cache from disk."""
+        if not self.cache_file.exists():
+            return
+
+        try:
+            with open(self.cache_file, 'r') as f:
+                cache_data = json.load(f)
+
+            # Reconstruct NewsItem objects
+            for item_data in cache_data:
+                try:
+                    item = NewsItem(
+                        title=item_data['title'],
+                        summary=item_data['summary'],
+                        link=item_data['link'],
+                        published=datetime.fromisoformat(item_data['published']),
+                        source=item_data['source'],
+                        sport=item_data.get('sport')
+                    )
+                    self.news_cache.append(item)
+                    self.seen_links.add(item.link)
+                except Exception as e:
+                    logger.debug(f"Error loading cached item: {e}")
+
+            # Filter out old items
+            cutoff_time = datetime.now() - timedelta(seconds=self.max_age)
+            self.news_cache = [item for item in self.news_cache if item.published > cutoff_time]
+
+            logger.info(f"Loaded {len(self.news_cache)} cached news items from disk")
+
+        except Exception as e:
+            logger.warning(f"Error loading news cache: {e}")
+
+    def _save_cache(self):
+        """Save news cache to disk."""
+        try:
+            cache_data = [item.to_dict() for item in self.news_cache]
+
+            with open(self.cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+
+            logger.debug(f"Saved {len(cache_data)} news items to cache")
+
+        except Exception as e:
+            logger.warning(f"Error saving news cache: {e}")
+
     def clear_cache(self):
         """Clear the news cache."""
         self.news_cache = []
         self.seen_links = set()
+
+        # Remove cache file
+        if self.cache_file.exists():
+            self.cache_file.unlink()
+
         logger.info("Cleared news cache")
 
 
