@@ -1,12 +1,15 @@
 """
-Market Scanner for Spike Momentum Bot
+Market Scanner for Spike Momentum Bot - FIXED VERSION
 
-Scans Polymarket for sports markets and monitors them for price spikes.
-Integrates with existing WebSocket infrastructure.
+Fixes:
+1. Word boundary matching for keywords (no more "nba" in "Coinbase")
+2. Uses CLOB API tag filtering (if available)
+3. Better sports market detection
 """
 
 import asyncio
 import json
+import re
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from datetime import datetime
@@ -23,31 +26,39 @@ logger = get_logger('spike_momentum.scanner')
 class MarketScanner:
     """Scans Polymarket for sports markets and monitors for spikes."""
 
-    # Sports-specific keywords (removed generic words like 'win', 'game', 'match')
+    # Sports-specific keywords with word boundaries
     SPORTS_KEYWORDS = [
         # Leagues
-        'nfl', 'nba', 'mlb', 'nhl', 'mls', 'ncaa', 'ncaaf', 'ncaab',
-        'premier league', 'champions league', 'uefa', 'world cup', 'la liga',
-        # Sports
-        'football', 'basketball', 'baseball', 'hockey', 'soccer',
+        r'\bnfl\b', r'\bnba\b', r'\bmlb\b', r'\bnhl\b', r'\bmls\b',
+        r'\bncaa\b', r'\bncaaf\b', r'\bncaab\b',
+        r'premier league', r'champions league', r'\buefa\b', r'world cup', r'la liga',
+        # Sports (word boundaries to avoid false matches)
+        r'\bfootball\b', r'\bbasketball\b', r'\bbaseball\b', r'\bhockey\b', r'\bsoccer\b',
         # Events
-        'playoff', 'super bowl', 'world series', 'stanley cup', 'finals',
-        'championship', 'tournament', 'bowl game',
+        r'\bplayoff', r'super bowl', r'world series', r'stanley cup', r'\bfinals\b',
+        r'championship', r'tournament', r'bowl game',
         # NFL Teams
-        'chiefs', 'bills', 'cowboys', 'patriots', '49ers', 'eagles', 'packers',
-        'ravens', 'dolphins', 'bengals', 'browns',
+        r'\bchiefs\b', r'\bbills\b', r'\bcowboys\b', r'\bpatriots\b',
+        r'\b49ers\b', r'\beagles\b', r'\bpackers\b',
+        r'\bravens\b', r'\bdolphins\b', r'\bbengals\b', r'\bbrowns\b',
+        r'\bsteelers\b', r'\bcolts\b', r'\btexans\b',
         # NBA Teams
-        'lakers', 'warriors', 'celtics', 'heat', 'bucks', 'nuggets', 'suns',
-        'mavericks', 'clippers', 'knicks',
+        r'\blakers\b', r'\bwarriors\b', r'\bceltics\b', r'\bheat\b',
+        r'\bbucks\b', r'\bnuggets\b', r'\bsuns\b',
+        r'\bmavericks\b', r'\bclippers\b', r'\bknicks\b',
+        r'\bbulls\b', r'\bjazz\b', r'\bgrizzlies\b', r'\bhawks\b',
         # Soccer Teams
-        'manchester', 'liverpool', 'barcelona', 'real madrid', 'chelsea',
-        'arsenal', 'bayern', 'psg',
+        r'\bmanchester\b', r'\bliverpool\b', r'\bbarcelona\b', r'real madrid',
+        r'\bchelsea\b', r'\barsenal\b', r'\bbayern\b', r'\bpsg\b',
         # Player names (high-profile only)
-        'mahomes', 'lebron', 'curry', 'messi', 'ronaldo',
+        r'\bmahomes\b', r'\blebron\b', r'\bcurry\b', r'\bmessi\b', r'\bronaldo\b',
     ]
 
-    # Category-based filtering (more reliable)
+    # Category-based filtering (most reliable)
     SPORTS_CATEGORIES = ['sports', 'football', 'basketball', 'baseball', 'soccer', 'hockey']
+
+    # Tags that indicate sports
+    SPORTS_TAGS = ['sports', 'nfl', 'nba', 'mlb', 'nhl', 'soccer', 'football', 'basketball']
 
     def __init__(
         self,
@@ -77,7 +88,10 @@ class MarketScanner:
         self.sports_markets = {}  # market_id -> market_info
         self.market_questions = {}  # market_id -> question text
 
-        logger.info("Initialized MarketScanner")
+        # Compile regex patterns once
+        self.keyword_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.SPORTS_KEYWORDS]
+
+        logger.info("Initialized MarketScanner with word-boundary keyword matching")
 
     def fetch_sports_markets(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -92,37 +106,16 @@ class MarketScanner:
         logger.info("Fetching markets from Polymarket...")
 
         try:
-            # Fetch all markets (pagination handled by get_sampling_markets)
-            cursor = ""
-            all_markets = []
+            # Try to fetch with tag filtering first (if API supports it)
+            # This is much more efficient than fetching all markets
+            sports_markets = self._fetch_markets_by_tags()
 
-            while len(all_markets) < limit:
-                try:
-                    response = self.client.client.get_sampling_markets(next_cursor=cursor)
-                    markets_data = response.get('data', [])
-
-                    if not markets_data:
-                        break
-
-                    all_markets.extend(markets_data)
-
-                    cursor = response.get('next_cursor')
-                    if cursor is None:
-                        break
-
-                except Exception as e:
-                    logger.error(f"Error fetching markets batch: {e}")
-                    break
-
-            logger.info(f"Fetched {len(all_markets)} total markets")
-
-            # Filter for sports markets
-            sports_markets = []
-            for market in all_markets:
-                if self._is_sports_market(market):
-                    sports_markets.append(market)
-
-            logger.info(f"Found {len(sports_markets)} sports markets")
+            if sports_markets:
+                logger.info(f"Fetched {len(sports_markets)} markets using tag filtering")
+            else:
+                # Fallback: fetch all and filter manually
+                logger.info("Tag filtering not available, fetching all markets...")
+                sports_markets = self._fetch_all_markets_and_filter(limit)
 
             # Store market info
             for market in sports_markets[:limit]:
@@ -147,6 +140,7 @@ class MarketScanner:
 
                     self.market_questions[condition_id] = question
 
+            logger.info(f"Stored {len(self.sports_markets)} sports markets")
             return sports_markets[:limit]
 
         except Exception as e:
@@ -155,25 +149,82 @@ class MarketScanner:
             traceback.print_exc()
             return []
 
+    def _fetch_markets_by_tags(self) -> List[Dict[str, Any]]:
+        """Try to fetch markets using tag/category filtering."""
+        sports_markets = []
+
+        # Try different tags
+        for tag in self.SPORTS_TAGS:
+            try:
+                # Note: This might not be supported by current API version
+                # Check py-clob-client documentation
+                response = self.client.client.get_markets(tag=tag)
+                if response and isinstance(response, list):
+                    sports_markets.extend(response)
+                    logger.info(f"Found {len(response)} markets with tag '{tag}'")
+            except TypeError:
+                # API doesn't support tag parameter, return empty list
+                return []
+            except Exception as e:
+                logger.debug(f"Error fetching by tag '{tag}': {e}")
+                continue
+
+        return sports_markets
+
+    def _fetch_all_markets_and_filter(self, limit: int) -> List[Dict[str, Any]]:
+        """Fallback: fetch all markets and filter manually."""
+        cursor = ""
+        all_markets = []
+
+        while len(all_markets) < limit * 5:  # Fetch more since we'll filter
+            try:
+                response = self.client.client.get_sampling_markets(next_cursor=cursor)
+                markets_data = response.get('data', [])
+
+                if not markets_data:
+                    break
+
+                all_markets.extend(markets_data)
+
+                cursor = response.get('next_cursor')
+                if cursor is None:
+                    break
+
+            except Exception as e:
+                logger.error(f"Error fetching markets batch: {e}")
+                break
+
+        logger.info(f"Fetched {len(all_markets)} total markets")
+
+        # Filter for sports markets
+        sports_markets = []
+        for market in all_markets:
+            if self._is_sports_market(market):
+                sports_markets.append(market)
+
+        logger.info(f"Found {len(sports_markets)} sports markets after filtering")
+        return sports_markets
+
     def _is_sports_market(self, market: Dict[str, Any]) -> bool:
-        """Check if market is sports-related."""
+        """Check if market is sports-related using word boundaries."""
         question = market.get('question', '').lower()
         category = market.get('category', '').lower()
-        tags = ' '.join(market.get('tags', [])).lower()
+        tags = market.get('tags', [])
+        tags_str = ' '.join(tags).lower() if tags else ''
 
         # First check category (most reliable)
         if category in self.SPORTS_CATEGORIES:
             return True
 
-        # Check tags for sports categories
-        for sports_cat in self.SPORTS_CATEGORIES:
-            if sports_cat in tags:
-                return True
+        # Check tags
+        if tags:
+            for tag in tags:
+                if tag.lower() in self.SPORTS_TAGS:
+                    return True
 
-        # Check question for sports keywords
-        # Only check question (not category/tags again) to avoid false positives
-        for keyword in self.SPORTS_KEYWORDS:
-            if keyword in question:
+        # Check question with word boundary patterns
+        for pattern in self.keyword_patterns:
+            if pattern.search(question):
                 return True
 
         return False
@@ -216,7 +267,11 @@ class MarketScanner:
             logger.error("No token IDs to monitor")
             return
 
-        logger.info(f"Monitoring {len(self.sports_markets)} markets ({len(token_ids)} tokens)")
+        print(f"\n✓ Monitoring {len(self.sports_markets)} sports markets ({len(token_ids)} tokens)")
+        print("\nSample markets:")
+        for i, (cid, info) in enumerate(list(self.sports_markets.items())[:5]):
+            print(f"  {i+1}. {info['question'][:80]}")
+        print()
 
         # Connect to WebSocket and process updates
         uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -230,6 +285,8 @@ class MarketScanner:
                 await websocket.send(json.dumps(message))
 
                 logger.info(f"Subscribed to {len(token_ids)} token IDs")
+                print(f"✓ Connected to WebSocket\n")
+                print("Waiting for price spikes...\n")
 
                 # Process incoming messages
                 while True:
@@ -298,9 +355,7 @@ class MarketScanner:
                         await self._handle_spike(spike)
 
             elif event_type == 'price_change':
-                # Price change update
-                # For spike detection, we need the full book, so skip price_change for now
-                # In production, you might want to track these separately
+                # Price change update - could implement incremental updates here
                 pass
 
     async def _handle_spike(self, spike: Spike):
@@ -325,6 +380,8 @@ class MarketScanner:
                 item = match['news']
                 print(f"  [{item.source}] {item.title}")
                 print(f"    Relevance: {match['relevance_score']:.2f}")
+        else:
+            print(f"\nNo related news found")
 
         # LLM analysis (if available)
         if self.llm_analyzer and news_matches:
@@ -365,11 +422,9 @@ async def run_live_scanner(config_path: str = 'spike_momentum/config.yaml'):
     # Initialize Polymarket client (read-only, no trading)
     try:
         client = PolymarketClient()
-    except ValueError:
-        # No credentials, that's okay for scanning
-        print("⚠️  No Polymarket credentials found - using public API only")
+    except ValueError as e:
+        print(f"⚠️  No Polymarket credentials: {e}")
         print("   Some features may be limited")
-        # You might want to handle this differently
         return
 
     # Initialize components
@@ -382,8 +437,10 @@ async def run_live_scanner(config_path: str = 'spike_momentum/config.yaml'):
         try:
             llm_provider = LLMProvider(config['llm'])
             llm_analyzer = LLMAnalyzer(llm_provider, config['llm'])
+            print(f"✓ LLM analyzer initialized ({config['llm']['provider']})\n")
         except Exception as e:
             logger.warning(f"LLM analyzer disabled: {e}")
+            print(f"⚠️  LLM analyzer disabled: {e}\n")
 
     # Initialize scanner
     scanner = MarketScanner(
