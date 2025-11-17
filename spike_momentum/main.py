@@ -267,6 +267,36 @@ def auto_mode(config_path='spike_momentum/config.yaml', dry_run=False):
         sys.exit(1)
 
 
+def live_mode(config_path='spike_momentum/config.yaml'):
+    """
+    Live mode - connect to real Polymarket markets via WebSocket.
+
+    Args:
+        config_path: Path to configuration file
+    """
+    print(f"\n{'='*120}")
+    print("SPIKE MOMENTUM BOT - LIVE MODE")
+    print("Monitoring REAL Polymarket sports markets")
+    print(f"{'='*120}\n")
+
+    try:
+        import asyncio
+        from spike_momentum.market_scanner import run_live_scanner
+
+        # Run the async scanner
+        asyncio.run(run_live_scanner(config_path))
+
+    except KeyboardInterrupt:
+        print("\n\nLive monitoring stopped by user.")
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
 def main():
     """Main entry point with CLI argument parsing."""
     parser = argparse.ArgumentParser(
@@ -274,8 +304,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Scan for spikes (observation only)
+  # Scan with demo data (observation only)
   python -m spike_momentum.main scan
+
+  # Monitor REAL markets (recommended!)
+  python -m spike_momentum.main live
 
   # Trade mode with confirmation (dry run)
   python -m spike_momentum.main trade --dry-run
@@ -287,8 +320,8 @@ Examples:
   python -m spike_momentum.main scan --config my_config.yaml
 
 Environment Variables:
-  SPIKE_MOMENTUM_PK              Private key for spike bot account
-  SPIKE_MOMENTUM_BROWSER_ADDRESS Wallet address for spike bot account
+  PK                             Private key for Polymarket (for live mode)
+  BROWSER_ADDRESS                Wallet address (for live mode)
   GEMINI_API_KEY                 Google Gemini API key (recommended)
   ANTHROPIC_API_KEY              Anthropic Claude API key (alternative)
   OPENAI_API_KEY                 OpenAI API key (alternative)
@@ -305,7 +338,7 @@ Configuration:
 
     parser.add_argument(
         'mode',
-        choices=['scan', 'trade', 'auto'],
+        choices=['scan', 'live', 'trade', 'auto'],
         help='Operation mode'
     )
 
@@ -327,6 +360,9 @@ Configuration:
     # Route to appropriate mode
     if args.mode == 'scan':
         scan_mode(config_path=args.config, dry_run=True)  # scan is always dry-run
+
+    elif args.mode == 'live':
+        live_mode(config_path=args.config)
 
     elif args.mode == 'trade':
         trade_mode(config_path=args.config, dry_run=args.dry_run)
