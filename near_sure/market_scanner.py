@@ -119,7 +119,11 @@ class NearSureMarketScanner:
             ret['answer2'] = row['tokens'][1]['outcome']
 
             # Get order book for token1
-            bids_df, asks_df = self.client.get_order_book(ret['token1'])
+            try:
+                bids_df, asks_df = self.client.get_order_book(ret['token1'])
+            except (ValueError, TypeError) as e:
+                print(f"Error unpacking order book for {ret['token1']}: {e}")
+                return None
 
             if bids_df.empty or asks_df.empty:
                 return None

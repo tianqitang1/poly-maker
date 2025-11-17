@@ -87,7 +87,18 @@ class InteractiveMarketSelector:
         Returns:
             Trade amount in USDC
         """
-        question_short = market['question'][:70] + "..." if len(market['question']) > 70 else market['question']
+        # Validate market structure
+        if not isinstance(market, dict):
+            raise ValueError(f"Invalid market data: expected dict, got {type(market)}")
+
+        if 'question' not in market:
+            raise ValueError(f"Invalid market data: missing 'question' key. Available keys: {list(market.keys())}")
+
+        question = market.get('question', 'Unknown market')
+        if not question or not isinstance(question, str):
+            raise ValueError(f"Invalid market question: {question}")
+
+        question_short = question[:70] + "..." if len(question) > 70 else question
 
         amount = inquirer.number(
             message=f"Trade amount (USDC) for:\n  {question_short}",
