@@ -104,12 +104,12 @@ class MarketScanner:
 
         logger.info(f"Initialized MarketScanner with strategies: {strategies}")
 
-    def fetch_sports_markets(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def fetch_sports_markets(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Fetch sports markets from Polymarket.
 
         Args:
-            limit: Maximum markets to return
+            limit: Maximum markets to return (None = no limit, return all)
 
         Returns:
             List of market dictionaries
@@ -128,8 +128,11 @@ class MarketScanner:
                 logger.info("Tag filtering not available, fetching all markets...")
                 sports_markets = self._fetch_all_markets_and_filter(limit)
 
+            # Apply limit if specified
+            markets_to_store = sports_markets if limit is None else sports_markets[:limit]
+
             # Store market info
-            for market in sports_markets[:limit]:
+            for market in markets_to_store:
                 condition_id = market.get('condition_id', '')
                 question = market.get('question', '')
 
@@ -175,7 +178,7 @@ class MarketScanner:
                     self.market_questions[condition_id] = question
 
             logger.info(f"Stored {len(self.sports_markets)} sports markets")
-            return sports_markets[:limit]
+            return markets_to_store
 
         except Exception as e:
             logger.error(f"Error fetching sports markets: {e}")
@@ -205,7 +208,7 @@ class MarketScanner:
 
         return sports_markets
 
-    def _fetch_all_markets_and_filter(self, limit: int) -> List[Dict[str, Any]]:
+    def _fetch_all_markets_and_filter(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fallback: fetch all markets and filter manually with proper pagination."""
         cursor = ""
         all_markets = []
@@ -338,8 +341,8 @@ class MarketScanner:
         """
         logger.info("Starting market monitoring...")
 
-        # Fetch sports markets first
-        sports_markets = self.fetch_sports_markets(limit=50)
+        # Fetch all sports markets (no limit - monitor everything we find)
+        sports_markets = self.fetch_sports_markets(limit=None)
 
         if not sports_markets:
             logger.error("No sports markets found to monitor")
