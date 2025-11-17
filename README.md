@@ -24,7 +24,7 @@ The repository consists of several interconnected modules:
 
 ## Requirements
 
-- Python 3.9.10 or higher
+- Python 3.10 or higher (3.12 or 3.13 recommended)
 - Node.js (for poly_merger)
 - Google Sheets API credentials
 - Polymarket account and API credentials
