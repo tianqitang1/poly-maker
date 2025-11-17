@@ -183,17 +183,58 @@ class NearSureMarketScanner:
             return pd.DataFrame()
 
         print(f"Found {len(all_markets)} total markets")
-        print("Enriching market data...")
+
+        # Pre-filter by time BEFORE enriching (to avoid unnecessary order book fetches)
+        print("Pre-filtering by closing time...")
+        time_filtered = []
+        now = datetime.utcnow()
+
+        for idx, row in all_markets.iterrows():
+            # Skip markets with no end date
+            if row.get('end_date_iso') is None:
+                continue
+
+            try:
+                end_date = pd.to_datetime(row['end_date_iso'])
+
+                # Convert to timezone-naive UTC for comparison
+                if end_date.tzinfo is not None:
+                    end_date = end_date.tz_convert('UTC').tz_localize(None)
+
+                hours_until_close = (end_date - now).total_seconds() / 3600
+
+                # Apply time filters
+                if hours_until_close < min_hours_until_close:
+                    continue
+                if max_hours_until_close and hours_until_close > max_hours_until_close:
+                    continue
+
+                # Skip markets with insufficient token data
+                if 'tokens' not in row or len(row['tokens']) < 2:
+                    continue
+
+                time_filtered.append(row)
+
+            except Exception:
+                continue
+
+        print(f"After time filtering: {len(time_filtered)} markets (reduced from {len(all_markets)})")
+
+        if not time_filtered:
+            print("No markets pass time filter")
+            return pd.DataFrame()
+
+        print("Enriching market data with order books...")
 
         enriched_markets = []
-        for idx, row in all_markets.iterrows():
+        for idx, row in enumerate(time_filtered):
             enriched = self.enrich_market_data(row)
             if enriched:
                 enriched_markets.append(enriched)
 
             # Progress indicator
             if (idx + 1) % 50 == 0:
-                print(f"Processed {idx + 1}/{len(all_markets)} markets...")
+                print(f"Processed {idx + 1}/{len(time_filtered)} markets...")
 
         if not enriched_markets:
             print("No markets could be enriched")
