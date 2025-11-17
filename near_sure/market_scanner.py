@@ -37,25 +37,38 @@ class NearSureMarketScanner:
         """
         cursor = ""
         all_markets = []
+        page = 0
 
         while True:
             try:
                 markets = self.client.client.get_sampling_markets(next_cursor=cursor)
-                markets_df = pd.DataFrame(markets['data'])
-                cursor = markets['next_cursor']
-                all_markets.append(markets_df)
 
-                if cursor is None:
+                # Validate response structure
+                if not isinstance(markets, dict) or 'data' not in markets:
+                    print(f"Invalid response structure on page {page + 1}")
                     break
+
+                markets_df = pd.DataFrame(markets['data'])
+
+                if not markets_df.empty:
+                    all_markets.append(markets_df)
+                    page += 1
+                    print(f"Fetched page {page}: {len(markets_df)} markets (Total: {sum(len(m) for m in all_markets)})")
+
+                # Check for next cursor
+                cursor = markets.get('next_cursor')
+                if cursor is None:
+                    print(f"Pagination complete: {page} pages fetched")
+                    break
+
             except Exception as e:
-                print(f"Error fetching markets: {e}")
+                print(f"Error fetching markets on page {page + 1}: {e}")
                 break
 
         if not all_markets:
             return pd.DataFrame()
 
-        all_df = pd.concat(all_markets)
-        all_df = all_df.reset_index(drop=True)
+        all_df = pd.concat(all_markets, ignore_index=True)
         return all_df
 
     def enrich_market_data(self, row) -> Optional[Dict]:
@@ -76,9 +89,19 @@ class NearSureMarketScanner:
             ret['condition_id'] = row['condition_id']
             ret['end_date_iso'] = row['end_date_iso']
 
-            # Parse closing time
+            # Parse closing time - handle None and timezone issues
+            if row['end_date_iso'] is None:
+                return None
+
             ret['end_date'] = pd.to_datetime(row['end_date_iso'])
-            ret['hours_until_close'] = (ret['end_date'] - datetime.now()).total_seconds() / 3600
+
+            # Convert to timezone-naive UTC for comparison
+            if ret['end_date'].tzinfo is not None:
+                ret['end_date'] = ret['end_date'].tz_convert('UTC').tz_localize(None)
+
+            # Use timezone-naive datetime for comparison
+            now = datetime.utcnow()
+            ret['hours_until_close'] = (ret['end_date'] - now).total_seconds() / 3600
 
             # Get token information
             if 'tokens' not in row or len(row['tokens']) < 2:
