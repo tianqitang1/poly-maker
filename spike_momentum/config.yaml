@@ -1,0 +1,182 @@
+# Spike Momentum Bot Configuration
+
+# LLM Provider Settings
+llm:
+  enabled: true
+  provider: "gemini"                    # Options: "gemini", "anthropic", "openai", "openrouter"
+
+  # Gemini settings (recommended for speed + cost)
+  gemini:
+    model: "gemini-2.5-flash"          # or "gemini-2.5-flash-lite" for even cheaper
+    api_key_env: "GEMINI_API_KEY"      # Environment variable name
+
+  # Anthropic settings (alternative)
+  anthropic:
+    model: "claude-haiku-3-5"
+    api_key_env: "ANTHROPIC_API_KEY"
+
+  # OpenAI settings (alternative)
+  openai:
+    model: "gpt-4o-mini"
+    api_key_env: "OPENAI_API_KEY"
+
+  # OpenRouter settings (multi-model access)
+  openrouter:
+    model: "google/gemini-2.5-flash"    # Can use any model via OpenRouter
+    api_key_env: "OPENROUTER_API_KEY"
+
+  # General LLM settings
+  timeout: 10                           # seconds
+  max_retries: 2
+  min_confidence: 70                    # 0-100 threshold for trading
+  required_for_trade: true              # Must have LLM approval to trade
+  cache_responses: true                 # Cache analysis for same events
+
+  # Cost controls
+  max_calls_per_hour: 100
+  max_cost_per_day: 10.0                # USD
+
+# Spike Detection Settings
+spike_detection:
+  enabled: true
+  price_change_threshold: 0.02          # 2% minimum price move
+  time_windows: [30, 60, 300]           # seconds (30s, 1min, 5min)
+  volume_threshold: 100                 # minimum $ volume
+  min_liquidity: 500                    # minimum order book depth
+  volatility_multiplier: 2.0            # spike must be 2x normal volatility
+
+  # Quality filters
+  min_spread_consistency: 0.9           # 0-1, detect wash trading
+  min_order_book_depth: 3               # minimum price levels on each side
+
+# News Monitoring Settings
+news:
+  enabled: true
+  refresh_interval: 60                  # seconds between news checks
+  max_age: 3600                         # only consider news from last hour (seconds)
+  relevance_threshold: 0.6              # 0-1 score for news-market matching
+  required_for_trade: false             # can trade without news (use as filter)
+
+  sources:
+    # Sports sources (primary focus)
+    espn_rss:
+      enabled: true
+      leagues: ["nfl", "nba", "mlb", "nhl", "soccer"]
+
+    thescore_rss:
+      enabled: true
+      leagues: ["nfl", "nba", "mlb", "nhl"]
+
+    google_news_rss:
+      enabled: true
+      sports_keywords: true              # auto-generate keywords from markets
+
+    # Future: paid APIs for real-time scores
+    sportsdata_io:
+      enabled: false
+      api_key_env: "SPORTSDATA_API_KEY"
+
+# Signal Fusion Settings
+signal_fusion:
+  weights:
+    technical: 0.3                      # spike strength weight
+    news: 0.3                           # news relevance weight
+    llm: 0.4                            # LLM confidence weight
+  min_composite_score: 0.7              # 0-1 threshold to trigger trade
+  require_all_signals: false            # false = OR logic, true = AND logic
+
+# Near-Resolution Detection
+near_resolution:
+  enabled: true
+  time_threshold_hours: 4               # market resolves within X hours
+  boost_factor: 1.5                     # multiply confidence score
+
+  # Sport-specific settings
+  sports:
+    in_game_boost: 2.0                  # active games get extra boost
+    late_game_threshold: 0.75           # e.g., 75% through game (4th quarter)
+    close_game_margin: 10               # points - consider game "close" if within this
+
+# Position Management
+position:
+  size_pct: 0.05                        # 5% of account per trade
+  max_concurrent: 3                     # maximum open positions
+  max_position_value: 500               # maximum $ per position
+
+  # Dynamic sizing based on signal quality
+  dynamic_sizing:
+    enabled: true
+    min_size_pct: 0.02                  # at minimum confidence
+    max_size_pct: 0.10                  # at 100% confidence
+
+# Exit Rules
+exits:
+  take_profit_pct: 0.03                 # 3% profit target
+  stop_loss_pct: -0.025                 # -2.5% stop loss
+  max_hold_time_sec: 900                # 15 minutes default
+
+  # Trailing stop
+  trailing_stop: true
+  trailing_offset_pct: 0.015            # 1.5% trailing distance
+
+  # Event-driven exits
+  exit_on_contradicting_news: true
+  exit_on_market_resolved: true
+  llm_assisted_exit: false              # optional: ask LLM about exits (expensive)
+
+  # Sport-specific exits
+  sports:
+    exit_on_game_end: true
+    tighten_stop_late_game: true        # reduce stop loss in final minutes
+
+# Risk Management
+risk:
+  max_daily_loss: -100                  # $ daily loss limit
+  max_daily_trades: 20
+  consecutive_loss_limit: 3             # pause after X losses
+  cooldown_after_loss_sec: 300          # 5 minutes
+
+  # Drawdown limits
+  max_drawdown_pct: 0.15                # 15% max drawdown
+  pause_on_drawdown: true
+
+# Market Selection
+markets:
+  min_liquidity: 1000                   # minimum order book depth
+  min_market_volume_24h: 5000           # minimum 24h volume
+  blacklist: []                         # market IDs to avoid
+
+  # Category focus (sports initially)
+  categories:
+    sports: true
+    politics: false                     # enable later
+    crypto: false
+    other: false
+
+  # Sport-specific filters
+  sports:
+    leagues: ["nfl", "nba", "mlb", "nhl", "premier-league", "uefa"]
+    min_game_importance: 0.5            # 0-1, filter out irrelevant games
+    only_live_games: false              # if true, only trade during active games
+
+# Operational Settings
+operation:
+  mode: "scan"                          # "scan", "trade", "auto"
+  scan_interval: 5                      # seconds between market scans
+  log_level: "INFO"                     # DEBUG, INFO, WARNING, ERROR
+
+  # Dry run mode
+  dry_run: true                         # simulate trades without executing
+
+  # Notifications (future)
+  notifications:
+    enabled: false
+    telegram_bot_token_env: "TELEGRAM_BOT_TOKEN"
+    discord_webhook_env: "DISCORD_WEBHOOK"
+
+# Performance Tracking
+analytics:
+  enabled: true
+  track_signal_quality: true            # track LLM accuracy over time
+  log_all_signals: true                 # log even signals that don't result in trades
+  performance_review_interval: 86400    # daily (seconds)
