@@ -16,6 +16,15 @@ post_resolution_arb:
   capital_allocation: 0.3               # Uses 30% of total capital (from above)
   sweep_aggressiveness: 0.995           # Sweep order book up to this price
 
+  # Per-opportunity capital allocation
+  # Controls what % of ARB capital to use PER opportunity
+  # Examples:
+  #   1.0 = 100% - Only 1 concurrent arb at a time (small accounts, testing)
+  #   0.5 = 50%  - Up to 2 concurrent arbs
+  #   0.1 = 10%  - Up to 10 concurrent arbs (large accounts)
+  #   0.01 = 1%  - Up to 100 concurrent arbs (very large accounts)
+  per_opportunity_allocation: 1.0       # Default: 100% for small test accounts
+
 # LLM Provider Settings
 llm:
   enabled: true

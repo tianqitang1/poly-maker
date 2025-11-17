@@ -100,6 +100,13 @@ class PostResolutionArbitrage:
         self.max_position_size = arb_config.get('max_position_size', 100)  # Max $ per arb
         self.capital_allocation = arb_config.get('capital_allocation', 0.3)  # 30% of total capital
 
+        # Per-opportunity capital allocation
+        # Controls what % of arb capital to use PER opportunity
+        # Examples:
+        #   1.0 = 100% (only 1 concurrent arb, small accounts)
+        #   0.1 = 10% (up to 10 concurrent arbs, large accounts)
+        self.per_opportunity_allocation = arb_config.get('per_opportunity_allocation', 1.0)
+
         # Verified results cache
         self.verified_results: Dict[str, GameResult] = {}  # market_id -> result
 
@@ -111,13 +118,18 @@ class PostResolutionArbitrage:
         # Format: {market_id: last_checked_timestamp}
         self.live_games: Dict[str, datetime] = {}
 
+        # Track active positions for capital management
+        # Format: {market_id: allocated_capital}
+        self.active_positions: Dict[str, float] = {}
+
         # Executed arbs (to avoid duplicates)
         self.executed_arbs = set()  # market_ids we've already arbed
 
         logger.info(
             f"Initialized PostResolutionArbitrage "
             f"(enabled={self.enabled}, min_profit={self.min_profit_cents}c, "
-            f"capital={self.capital_allocation*100:.0f}%)"
+            f"capital={self.capital_allocation*100:.0f}%, "
+            f"per_opp={self.per_opportunity_allocation*100:.0f}%)"
         )
 
     async def check_market_for_arb(
@@ -215,11 +227,31 @@ class PostResolutionArbitrage:
         if winning_token_price > self.max_price:
             return None  # Price too high (low profit margin)
 
-        # Calculate position size
+        # Calculate position size with proper capital management
+        total_arb_capital = self.capital_allocation * self._get_total_capital()
+        allocated_capital = sum(self.active_positions.values())
+        available_capital = total_arb_capital - allocated_capital
+
+        # Per-opportunity allocation
+        opportunity_capital = self.per_opportunity_allocation * total_arb_capital
+
+        # Position size is the minimum of:
+        # 1. Max position size (hard cap)
+        # 2. Per-opportunity allocation
+        # 3. Available capital (can't overdraw)
         position_size = min(
             self.max_position_size,
-            self.capital_allocation * self._get_available_capital()
+            opportunity_capital,
+            available_capital
         )
+
+        # Check if we have enough capital
+        if position_size < 1.0:  # Less than $1 available
+            logger.warning(
+                f"Insufficient capital for arb: ${position_size:.2f} "
+                f"(allocated: ${allocated_capital:.2f}/{total_arb_capital:.2f})"
+            )
+            return None  # Skip this opportunity
 
         # Arb opportunity found!
         opportunity = {
@@ -484,11 +516,48 @@ Respond with valid JSON only."""
 
         return prompt
 
-    def _get_available_capital(self) -> float:
-        """Get available capital for arb (placeholder)."""
+    def _get_total_capital(self) -> float:
+        """Get total capital for arb strategy."""
         # TODO: Integrate with actual account balance
-        # For now, return a reasonable default
-        return 1000.0  # $1000 allocated to post-res arb
+        # For now, return configured total capital
+        total_capital = self.config.get('capital', {}).get('total_capital', 1000.0)
+        return total_capital
+
+    def release_capital(self, market_id: str) -> None:
+        """
+        Release allocated capital when market resolves.
+
+        Call this after a market settles to free up capital for new opportunities.
+
+        Args:
+            market_id: Market that resolved
+        """
+        if market_id in self.active_positions:
+            released = self.active_positions.pop(market_id)
+            logger.info(f"Released ${released:.2f} from resolved market {market_id[:8]}...")
+
+            total_arb_capital = self.capital_allocation * self._get_total_capital()
+            allocated_capital = sum(self.active_positions.values())
+            available_capital = total_arb_capital - allocated_capital
+
+            logger.info(
+                f"Capital status: ${available_capital:.2f} available / "
+                f"${allocated_capital:.2f} allocated / ${total_arb_capital:.2f} total"
+            )
+
+    def get_capital_status(self) -> Dict[str, float]:
+        """Get current capital allocation status."""
+        total_arb_capital = self.capital_allocation * self._get_total_capital()
+        allocated_capital = sum(self.active_positions.values())
+        available_capital = total_arb_capital - allocated_capital
+
+        return {
+            'total': total_arb_capital,
+            'allocated': allocated_capital,
+            'available': available_capital,
+            'active_positions': len(self.active_positions),
+            'utilization': allocated_capital / total_arb_capital if total_arb_capital > 0 else 0
+        }
 
     async def execute_arb(
         self,
@@ -588,15 +657,30 @@ Respond with valid JSON only."""
 
             if response:
                 order_id = response.get('orderID', 'N/A') if isinstance(response, dict) else 'N/A'
+
+                # Track allocated capital for this position
+                self.active_positions[market_id] = buy_size
+
+                # Calculate remaining capital
+                total_arb_capital = self.capital_allocation * self._get_total_capital()
+                allocated_capital = sum(self.active_positions.values())
+                available_capital = total_arb_capital - allocated_capital
+
                 print(f"\n✅ ORDER PLACED SUCCESSFULLY!")
                 print(f"   Order ID: {order_id}")
                 print(f"   Expected Profit: ${opportunity['estimated_profit']:.2f} (when market resolves)")
+                print(f"   Capital Allocated: ${buy_size:.2f}")
+                print(f"   Capital Remaining: ${available_capital:.2f} / ${total_arb_capital:.2f}")
+                print(f"   Active Positions: {len(self.active_positions)}")
                 print(f"{'='*120}\n")
 
                 # Mark as executed to avoid duplicates
                 self.executed_arbs.add(market_id)
 
-                logger.info(f"Post-res arb executed successfully: {order_id}")
+                logger.info(
+                    f"Post-res arb executed successfully: {order_id} "
+                    f"(allocated: ${buy_size:.2f}, remaining: ${available_capital:.2f})"
+                )
 
                 return {
                     'success': True,
