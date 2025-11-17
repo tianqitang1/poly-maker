@@ -25,6 +25,7 @@ dependencies = [
     "InquirerPy==0.3.4",
     "PyYAML==6.0.1",
     "pysocks>=1.7.1",
+    "google-generativeai>=0.8.5",
 ]
 
 [project.optional-dependencies]
