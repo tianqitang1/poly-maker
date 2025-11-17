@@ -3,6 +3,7 @@ LLM Provider Abstraction Layer
 
 Unified interface for multiple LLM providers:
 - Google Gemini (recommended for speed + cost)
+- DeepSeek (very competitive pricing)
 - Anthropic Claude
 - OpenAI GPT
 - OpenRouter (multi-model access)
@@ -294,6 +295,70 @@ class OpenRouterProvider(BaseLLMProvider):
             return {'success': False, 'error': str(e)}
 
 
+class DeepSeekProvider(BaseLLMProvider):
+    """DeepSeek provider (OpenAI-compatible API)."""
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+        self.model = config.get('deepseek', {}).get('model', 'deepseek-chat')
+        api_key_env = config.get('deepseek', {}).get('api_key_env', 'DEEPSEEK_API_KEY')
+        self.api_key = os.getenv(api_key_env)
+
+        if not self.api_key:
+            raise ValueError(f"Missing API key: {api_key_env} not set in environment")
+
+        # Import OpenAI SDK (DeepSeek is compatible)
+        try:
+            from openai import OpenAI
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url="https://api.deepseek.com",
+                timeout=self.timeout
+            )
+        except ImportError:
+            raise ImportError("openai not installed. Run: pip install openai")
+
+    def call(self, prompt: str, json_mode: bool = False) -> Dict[str, Any]:
+        """Call DeepSeek API."""
+        try:
+            # Configure request
+            kwargs = {
+                'model': self.model,
+                'messages': [{"role": "user", "content": prompt}],
+                'temperature': 0.3,
+                'max_tokens': 1024,
+            }
+
+            if json_mode:
+                kwargs['response_format'] = {"type": "json_object"}
+                prompt += "\n\nRespond with valid JSON only."
+                kwargs['messages'] = [{"role": "user", "content": prompt}]
+
+            # Make API call
+            response = self.client.chat.completions.create(**kwargs)
+
+            content = response.choices[0].message.content
+
+            # Parse JSON if requested
+            if json_mode:
+                try:
+                    content = json.loads(content)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse JSON response: {e}")
+                    return {'success': False, 'error': 'Invalid JSON response'}
+
+            return {
+                'success': True,
+                'content': content,
+                'model': self.model,
+                'provider': 'deepseek'
+            }
+
+        except Exception as e:
+            logger.error(f"DeepSeek API error: {e}")
+            return {'success': False, 'error': str(e)}
+
+
 class LLMProvider:
     """
     Unified LLM provider interface.
@@ -314,6 +379,8 @@ class LLMProvider:
             self.provider = OpenAIProvider(config)
         elif self.provider_name == 'openrouter':
             self.provider = OpenRouterProvider(config)
+        elif self.provider_name == 'deepseek':
+            self.provider = DeepSeekProvider(config)
         else:
             raise ValueError(f"Unknown provider: {self.provider_name}")
 
