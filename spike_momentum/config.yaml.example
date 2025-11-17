@@ -48,7 +48,8 @@ llm:
   required_for_trade: true              # Must have LLM approval to trade
   cache_responses: true                 # Cache analysis for same events
 
-  # Cost controls
+  # Rate limiting
+  max_requests_per_minute: 15           # Gemini free tier: 15 RPM, paid: 60+ RPM
   max_calls_per_hour: 100
   max_cost_per_day: 10.0                # USD
 

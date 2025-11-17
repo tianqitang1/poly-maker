@@ -15,8 +15,10 @@ Usage:
 import os
 import json
 import time
+import re
 from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
+from collections import deque
 
 from poly_utils.logging_utils import get_logger
 
@@ -322,6 +324,35 @@ class LLMProvider:
         self.total_cost = 0.0
         self.hourly_calls = {}  # timestamp -> count
 
+        # Per-minute rate limiting (for Gemini free tier: 15 RPM)
+        self.max_rpm = config.get('max_requests_per_minute', 15)
+        self.minute_requests = deque()  # Track request timestamps in last 60s
+
+    def _wait_for_rate_limit(self):
+        """Wait if we're at the per-minute rate limit."""
+        current_time = time.time()
+
+        # Clean old requests (older than 60 seconds)
+        while self.minute_requests and current_time - self.minute_requests[0] > 60:
+            self.minute_requests.popleft()
+
+        # Check if we're at the limit
+        if len(self.minute_requests) >= self.max_rpm:
+            oldest_request = self.minute_requests[0]
+            wait_time = 60 - (current_time - oldest_request) + 0.1  # Add 0.1s buffer
+
+            if wait_time > 0:
+                logger.warning(
+                    f"Rate limit: {len(self.minute_requests)}/{self.max_rpm} RPM. "
+                    f"Waiting {wait_time:.1f}s..."
+                )
+                time.sleep(wait_time)
+
+                # Clean again after waiting
+                current_time = time.time()
+                while self.minute_requests and current_time - self.minute_requests[0] > 60:
+                    self.minute_requests.popleft()
+
     def analyze(self, prompt: str, json_mode: bool = True, retries: Optional[int] = None) -> Dict[str, Any]:
         """
         Analyze prompt with LLM.
@@ -337,18 +368,33 @@ class LLMProvider:
         if retries is None:
             retries = self.provider.max_retries
 
-        # Check rate limits
+        # Check hourly/daily rate limits
         if not self._check_rate_limits():
             logger.warning("Rate limit exceeded, skipping LLM call")
             return {'success': False, 'error': 'Rate limit exceeded'}
+
+        # Wait if we're at per-minute rate limit
+        self._wait_for_rate_limit()
 
         # Attempt API call with retries
         for attempt in range(retries + 1):
             response = self.provider.call(prompt, json_mode=json_mode)
 
             if response['success']:
+                # Track request timestamp for rate limiting
+                self.minute_requests.append(time.time())
                 self._track_call()
                 return response
+
+            # Check if it's a rate limit error
+            error_msg = response.get('error', '')
+            if 'quota' in error_msg.lower() or 'rate limit' in error_msg.lower():
+                # Parse retry-after time from error message
+                retry_after = self._parse_retry_after(error_msg)
+                if retry_after:
+                    logger.warning(f"Rate limit hit. Retrying after {retry_after:.1f}s...")
+                    time.sleep(retry_after)
+                    continue
 
             if attempt < retries:
                 wait_time = 2 ** attempt  # Exponential backoff
@@ -358,6 +404,34 @@ class LLMProvider:
         # All retries failed
         logger.error("All LLM API retries failed")
         return {'success': False, 'error': 'Max retries exceeded'}
+
+    def _parse_retry_after(self, error_msg: str) -> Optional[float]:
+        """
+        Parse retry-after time from error message.
+
+        Args:
+            error_msg: Error message from API
+
+        Returns:
+            Retry time in seconds, or None if not found
+        """
+        # Try to parse "retry in X.XXs" or "retry in Xs"
+        match = re.search(r'retry in ([\d.]+)s', error_msg, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+
+        # Try to parse "retry after X seconds"
+        match = re.search(r'retry after ([\d.]+)\s*seconds?', error_msg, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+
+        return None
 
     def _check_rate_limits(self) -> bool:
         """Check if within rate limits."""
@@ -397,9 +471,15 @@ class LLMProvider:
 
     def get_stats(self) -> Dict[str, Any]:
         """Get usage statistics."""
+        # Clean old minute requests for accurate stats
+        current_time = time.time()
+        recent_requests = [ts for ts in self.minute_requests if current_time - ts <= 60]
+
         return {
             'provider': self.provider_name,
             'total_calls': self.total_calls,
             'estimated_cost': self.total_cost,
-            'hourly_calls': sum(self.hourly_calls.values())
+            'hourly_calls': sum(self.hourly_calls.values()),
+            'rpm_current': len(recent_requests),
+            'rpm_limit': self.max_rpm
         }
