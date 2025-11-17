@@ -165,13 +165,44 @@ class PostResolutionArbitrage:
 
         result = self.verified_results[market_id]
 
-        # Get current price of winning token
-        # If winner is 'yes', check YES token price
-        # If winner is 'no', check NO token price
+        # Get the actual order book for the winning token
+        # Need to fetch YES or NO token price depending on winner
+        try:
+            # Get token IDs from market_info
+            yes_token = market_info.get('yes_token')
+            no_token = market_info.get('no_token')
 
-        # For now, use current_price as approximation
-        # In production, we'd fetch order book for the specific winning token
-        winning_token_price = current_price if result.winner == 'yes' else (1 - current_price)
+            if not yes_token or not no_token:
+                logger.warning(f"Missing token IDs for market {market_id}")
+                return None
+
+            # Determine which token won
+            winning_token_id = yes_token if result.winner == 'yes' else no_token
+
+            # Fetch order book for winning token
+            order_book = self.client.get_order_book(winning_token_id)
+
+            if not order_book or 'asks' not in order_book:
+                logger.warning(f"Could not fetch order book for {winning_token_id}")
+                # Fall back to approximation
+                winning_token_price = current_price if result.winner == 'yes' else (1 - current_price)
+            else:
+                # Get best ask (price we'd pay to buy)
+                asks = order_book.get('asks', [])
+                if not asks:
+                    logger.warning(f"No asks available for {winning_token_id}")
+                    return None  # Can't buy if no one is selling
+
+                # Best ask is the lowest price someone is willing to sell at
+                best_ask = float(asks[0]['price'])
+                winning_token_price = best_ask
+
+                logger.info(f"Winning token ({result.winner.upper()}) best ask: ${winning_token_price:.3f}")
+
+        except Exception as e:
+            logger.error(f"Error fetching order book: {e}")
+            # Fall back to approximation
+            winning_token_price = current_price if result.winner == 'yes' else (1 - current_price)
 
         # Check if there's arb opportunity
         expected_value = 1.00  # Winning token settles to $1.00
@@ -501,24 +532,101 @@ Respond with valid JSON only."""
                 'opportunity': opportunity
             }
 
-        # TODO: Implement actual order execution
-        # 1. Get order book for winning token
-        # 2. Sweep asks up to max_price
-        # 3. Verify fills
-        # 4. Track position
+        # LIVE EXECUTION
+        try:
+            # Get market info to determine token and neg_risk status
+            market_info = self.client.get_market(market_id)
+            if not market_info:
+                logger.error(f"Could not fetch market info for {market_id}")
+                print(f"\n❌ ERROR: Could not fetch market info")
+                print(f"{'='*120}\n")
+                return {
+                    'success': False,
+                    'error': 'Could not fetch market info',
+                    'opportunity': opportunity
+                }
 
-        print(f"\n⚠️  LIVE EXECUTION NOT YET IMPLEMENTED")
-        print(f"   Would buy {opportunity['winner']} token up to {self.max_price:.3f}")
-        print(f"{'='*120}\n")
+            # Get winning token ID
+            tokens = market_info.get('tokens', [])
+            if len(tokens) < 2:
+                logger.error(f"Invalid token structure for market {market_id}")
+                print(f"\n❌ ERROR: Invalid token structure")
+                print(f"{'='*120}\n")
+                return {
+                    'success': False,
+                    'error': 'Invalid token structure',
+                    'opportunity': opportunity
+                }
 
-        # Mark as executed to avoid duplicates
-        self.executed_arbs.add(market_id)
+            # YES token is typically tokens[0], NO is tokens[1]
+            yes_token_id = tokens[0].get('token_id', '')
+            no_token_id = tokens[1].get('token_id', '')
 
-        return {
-            'success': False,
-            'error': 'Live execution not implemented yet',
-            'opportunity': opportunity
-        }
+            winning_token_id = yes_token_id if opportunity['winner'] == 'yes' else no_token_id
+
+            # Check if neg_risk market
+            neg_risk = market_info.get('neg_risk', False)
+
+            # Calculate buy size (dollar amount)
+            buy_size = opportunity['position_size']
+            buy_price = opportunity['current_price']
+
+            logger.info(f"Placing BUY order: {winning_token_id} @ ${buy_price:.4f}, size: ${buy_size:.2f}")
+            print(f"\n📝 Placing order...")
+            print(f"   Token: {opportunity['winner'].upper()}")
+            print(f"   Price: ${buy_price:.4f}")
+            print(f"   Size: ${buy_size:.2f}")
+
+            # Place the order
+            response = self.client.create_order(
+                marketId=winning_token_id,
+                action='BUY',
+                price=buy_price,
+                size=buy_size,
+                neg_risk=neg_risk
+            )
+
+            if response:
+                order_id = response.get('orderID', 'N/A') if isinstance(response, dict) else 'N/A'
+                print(f"\n✅ ORDER PLACED SUCCESSFULLY!")
+                print(f"   Order ID: {order_id}")
+                print(f"   Expected Profit: ${opportunity['estimated_profit']:.2f} (when market resolves)")
+                print(f"{'='*120}\n")
+
+                # Mark as executed to avoid duplicates
+                self.executed_arbs.add(market_id)
+
+                logger.info(f"Post-res arb executed successfully: {order_id}")
+
+                return {
+                    'success': True,
+                    'order_id': order_id,
+                    'opportunity': opportunity,
+                    'response': response
+                }
+            else:
+                print(f"\n❌ ORDER FAILED (empty response)")
+                print(f"{'='*120}\n")
+                logger.error(f"Order placement failed for {market_id}")
+                return {
+                    'success': False,
+                    'error': 'Order placement failed (empty response)',
+                    'opportunity': opportunity
+                }
+
+        except Exception as e:
+            logger.error(f"Error executing arb: {e}")
+            import traceback
+            traceback.print_exc()
+
+            print(f"\n❌ ERROR EXECUTING TRADE: {e}")
+            print(f"{'='*120}\n")
+
+            return {
+                'success': False,
+                'error': str(e),
+                'opportunity': opportunity
+            }
 
 
 # Example usage
