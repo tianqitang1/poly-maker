@@ -199,7 +199,7 @@ class OpenAIProvider(BaseLLMProvider):
                 'model': self.model,
                 'messages': [{"role": "user", "content": prompt}],
                 'temperature': 0.3,
-                'max_tokens': 1024,
+                'max_completion_tokens': 1024,  # Updated from max_tokens for new API
             }
 
             if json_mode:
@@ -326,7 +326,7 @@ class DeepSeekProvider(BaseLLMProvider):
                 'model': self.model,
                 'messages': [{"role": "user", "content": prompt}],
                 'temperature': 0.3,
-                'max_tokens': 1024,
+                'max_tokens': 1024,  # DeepSeek still uses max_tokens
             }
 
             if json_mode:
