@@ -62,8 +62,14 @@ class NearSureMarketScanner:
                     break
 
             except Exception as e:
-                print(f"Error fetching markets on page {page + 1}: {e}")
-                break
+                # Handle end-of-pagination errors gracefully
+                error_str = str(e)
+                if ('400' in error_str or 'next item should be greater than or equal to 0' in error_str):
+                    print(f"Pagination complete: {page} pages fetched (reached end of available markets)")
+                    break
+                else:
+                    print(f"Error fetching markets on page {page + 1}: {e}")
+                    break
 
         if not all_markets:
             return pd.DataFrame()
