@@ -243,16 +243,13 @@ class MarketScanner:
         filtered_count = 0
 
         for market in all_markets:
-            # Check for sportsMarketType in events
-            events = market.get('events', [])
-            if events and len(events) > 0:
-                event = events[0]
-                sports_type = event.get('sportsMarketType')
-                if sports_type:
-                    if sports_type.lower() == 'moneyline':
-                        moneyline_count += 1
-                    else:
-                        filtered_count += 1
+            # Check for sportsMarketType at market level (not in events!)
+            sports_type = market.get('sportsMarketType')
+            if sports_type:
+                if sports_type.lower() == 'moneyline':
+                    moneyline_count += 1
+                else:
+                    filtered_count += 1
 
             if self._is_sports_market(market):
                 sports_markets.append(market)
@@ -273,22 +270,19 @@ class MarketScanner:
 
         Only accepts moneyline markets for simplicity.
         """
-        # PRIORITY 1: Check for sportsMarketType field (most reliable!)
+        # PRIORITY 1: Check for sportsMarketType field at market level (most reliable!)
         # This field indicates real sports markets and their type
-        events = market.get('events', [])
-        if events and len(events) > 0:
-            event = events[0]
-            sports_market_type = event.get('sportsMarketType')
+        sports_market_type = market.get('sportsMarketType')
 
-            if sports_market_type:
-                # Only trade moneyline markets (most straightforward)
-                if sports_market_type.lower() == 'moneyline':
-                    logger.debug(f"Found moneyline sports market: {market.get('question', '')[:50]}...")
-                    return True
-                else:
-                    # Skip spreads, over/under, parlays, etc.
-                    logger.debug(f"Skipping non-moneyline sports market ({sports_market_type}): {market.get('question', '')[:50]}...")
-                    return False
+        if sports_market_type:
+            # Only trade moneyline markets (most straightforward)
+            if sports_market_type.lower() == 'moneyline':
+                logger.debug(f"Found moneyline sports market: {market.get('question', '')[:50]}...")
+                return True
+            else:
+                # Skip spreads, over/under, parlays, etc.
+                logger.debug(f"Skipping non-moneyline sports market ({sports_market_type}): {market.get('question', '')[:50]}...")
+                return False
 
         # FALLBACK: Use keyword-based detection if sportsMarketType not available
         question = market.get('question', '').lower()
