@@ -17,6 +17,7 @@ Profit: 1-5c per share (but risk-free!)
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import re
+import json
 
 from spike_momentum.news_monitor import SportsNewsMonitor, NewsItem
 from spike_momentum.llm_provider import LLMProvider
@@ -393,6 +394,15 @@ class PostResolutionArbitrage:
             logger.warning(f"No news found for {market_question}")
             return None
 
+        # Log matched news items for debugging
+        logger.info(f"Found {len(news_matches)} news items for verification:")
+        for i, match in enumerate(news_matches[:5], 1):
+            item = match['news']
+            logger.info(
+                f"  {i}. [{item.source}] {item.title} "
+                f"(relevance: {match['relevance_score']:.2f})"
+            )
+
         # Use LLM to verify result
         if not self.llm_provider:
             logger.warning("LLM provider not available for verification")
@@ -401,12 +411,24 @@ class PostResolutionArbitrage:
         # Build verification prompt
         prompt = self._build_verification_prompt(market_question, news_matches)
 
+        # Log the full prompt for debugging
+        logger.info(f"LLM Verification Prompt for '{market_question[:50]}...':")
+        logger.info("-" * 80)
+        logger.info(prompt)
+        logger.info("-" * 80)
+
         # Call LLM
         response = self.llm_provider.analyze(prompt, json_mode=True)
 
         if not response['success']:
             logger.error(f"LLM verification failed: {response.get('error')}")
             return None
+
+        # Log the full response for debugging
+        logger.info(f"LLM Verification Response:")
+        logger.info("-" * 80)
+        logger.info(json.dumps(response.get('content', {}), indent=2))
+        logger.info("-" * 80)
 
         # Parse response
         try:
