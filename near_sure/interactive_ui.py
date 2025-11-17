@@ -220,7 +220,7 @@ class InteractiveMarketSelector:
         return {
             'min_midpoint': float(min_midpoint),
             'max_midpoint': float(max_midpoint),
-            'max_hours_until_close': float(max_hours) if max_hours > 0 else None,
+            'max_hours_until_close': float(max_hours) if float(max_hours) > 0 else None,
             'min_hours_until_close': float(min_hours),
             'min_certainty': float(min_certainty),
         }
