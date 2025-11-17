@@ -37,7 +37,8 @@ class GameResult:
         confidence: int,  # 0-100
         final_score: Optional[str] = None,
         verification_source: str = 'llm',
-        reasoning: str = ''
+        reasoning: str = '',
+        game_status: str = 'unknown'  # 'not_started', 'live', 'ended', 'unknown'
     ):
         self.market_id = market_id
         self.market_question = market_question
@@ -46,6 +47,7 @@ class GameResult:
         self.final_score = final_score
         self.verification_source = verification_source
         self.reasoning = reasoning
+        self.game_status = game_status
         self.verified_at = datetime.now()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -57,11 +59,12 @@ class GameResult:
             'final_score': self.final_score,
             'verification_source': self.verification_source,
             'reasoning': self.reasoning,
+            'game_status': self.game_status,
             'verified_at': self.verified_at.isoformat()
         }
 
     def __repr__(self) -> str:
-        return f"<GameResult: {self.market_question[:40]} winner={self.winner} conf={self.confidence}%>"
+        return f"<GameResult: {self.market_question[:40]} status={self.game_status} winner={self.winner} conf={self.confidence}%>"
 
 
 class PostResolutionArbitrage:
@@ -101,8 +104,12 @@ class PostResolutionArbitrage:
         self.verified_results: Dict[str, GameResult] = {}  # market_id -> result
 
         # Cache for "not ended yet" markets to avoid repeated LLM calls
-        # Format: {market_id: (last_checked_timestamp, end_date_iso)}
+        # Format: {market_id: (last_checked_timestamp, game_status)}
         self.not_ended_cache: Dict[str, tuple] = {}
+
+        # Cache for live games (should check very frequently!)
+        # Format: {market_id: last_checked_timestamp}
+        self.live_games: Dict[str, datetime] = {}
 
         # Executed arbs (to avoid duplicates)
         self.executed_arbs = set()  # market_ids we've already arbed
@@ -204,13 +211,15 @@ class PostResolutionArbitrage:
 
     def _should_check_market(self, market_id: str, end_date_iso: str) -> bool:
         """
-        Determine if we should check this market based on end date and cache.
+        Determine if we should check this market based on end date, game status, and cache.
 
         Strategy:
-        - Markets ending >7 days away: Check once every 24 hours
-        - Markets ending in 1-7 days: Check once every 6 hours
-        - Markets ending in <24 hours: Check every 30 minutes
-        - Markets past end_date: Always check (might have arb!)
+        - LIVE GAMES: Check every 2 minutes (game in progress!)
+        - Markets past end_date: Check every 5 minutes (arb opportunity!)
+        - Markets ending <24 hours: Check every 30 minutes
+        - Markets ending 1-7 days: Check every 6 hours
+        - Markets ending >7 days: Check every 24 hours
+        - Markets >30 days away: Skip entirely
 
         Args:
             market_id: Market identifier
@@ -220,6 +229,19 @@ class PostResolutionArbitrage:
             True if should check, False if should skip
         """
         now = datetime.now()
+
+        # PRIORITY 1: Live games - check very frequently!
+        if market_id in self.live_games:
+            last_checked = self.live_games[market_id]
+            time_since_check = (now - last_checked).total_seconds()
+
+            # Check live games every 2 minutes
+            if time_since_check < 2 * 60:  # 2 minutes
+                logger.debug(f"Skipping LIVE game {market_id[:8]}... (checked {time_since_check/60:.1f}m ago)")
+                return False
+            else:
+                logger.info(f"Checking LIVE game: {market_id[:8]}")
+                return True
 
         # Parse end date if available
         end_date = None
@@ -234,15 +256,20 @@ class PostResolutionArbitrage:
 
         # Check cache for "not ended yet" markets
         if market_id in self.not_ended_cache:
-            last_checked, _ = self.not_ended_cache[market_id]
+            last_checked, game_status = self.not_ended_cache[market_id]
             time_since_check = (now - last_checked).total_seconds()
 
             if end_date:
                 time_until_end = (end_date - now).total_seconds()
 
-                # Market ended - always check!
+                # PRIORITY 2: Market ended but not resolved - check frequently for arb!
                 if time_until_end <= 0:
-                    return True
+                    if time_since_check < 5 * 60:  # 5 minutes
+                        logger.debug(f"Skipping POST-GAME {market_id[:8]}... (checked {time_since_check/60:.1f}m ago)")
+                        return False
+                    else:
+                        logger.info(f"Checking POST-GAME market: {market_id[:8]}")
+                        return True
 
                 # >7 days away: check every 24 hours
                 if time_until_end > 7 * 24 * 3600:
@@ -273,7 +300,7 @@ class PostResolutionArbitrage:
             if time_until_end > 30 * 24 * 3600:  # >30 days
                 logger.debug(f"Skipping {market_id[:8]}... (ends in {time_until_end/86400:.0f} days - too far away)")
                 # Cache it so we don't keep checking
-                self.not_ended_cache[market_id] = (now, end_date_iso)
+                self.not_ended_cache[market_id] = (now, 'not_started')
                 return False
 
         # Should check
@@ -322,11 +349,27 @@ class PostResolutionArbitrage:
         try:
             data = response['content']
 
-            # Validate required fields
-            if 'game_ended' not in data or not data['game_ended']:
-                logger.info(f"Game not ended yet: {market_question}")
+            # Check game status
+            game_status = data.get('game_status', 'unknown')
+            game_ended = data.get('game_ended', False)
+
+            # Handle live games
+            if game_status == 'live':
+                logger.info(f"🔴 LIVE GAME: {market_question}")
+                self.live_games[market_id] = datetime.now()
+                # Remove from not_ended_cache if it was there
+                if market_id in self.not_ended_cache:
+                    del self.not_ended_cache[market_id]
+                return None
+
+            # Game not ended yet
+            if not game_ended:
+                logger.info(f"Game not ended yet: {market_question} (status: {game_status})")
                 # Cache this result to avoid repeated checks
-                self.not_ended_cache[market_id] = (datetime.now(), None)
+                self.not_ended_cache[market_id] = (datetime.now(), game_status)
+                # Remove from live games if it was there
+                if market_id in self.live_games:
+                    del self.live_games[market_id]
                 return None
 
             if 'winner' not in data or 'confidence' not in data:
@@ -340,10 +383,16 @@ class PostResolutionArbitrage:
                 confidence=data['confidence'],
                 final_score=data.get('final_score'),
                 verification_source='llm+news',
-                reasoning=data.get('reasoning', '')
+                reasoning=data.get('reasoning', ''),
+                game_status='ended'
             )
 
-            logger.info(f"Verified result: {result}")
+            logger.info(f"✅ Verified result: {result}")
+
+            # Remove from live games cache (game is over!)
+            if market_id in self.live_games:
+                del self.live_games[market_id]
+
             return result
 
         except Exception as e:
@@ -371,25 +420,34 @@ RECENT NEWS:
 {news_text}
 
 VERIFICATION TASK:
-1. Has the game/event referenced in the market question concluded?
-2. If yes, what was the outcome?
-3. Based on the news, should the market resolve to YES or NO?
-4. How confident are you (0-100%)?
+1. What is the current status of the game/event?
+2. Has the game/event concluded?
+3. If yes, what was the outcome?
+4. Based on the news, should the market resolve to YES or NO?
+5. How confident are you (0-100%)?
 
 OUTPUT FORMAT (JSON):
 {{
+  "game_status": "not_started" | "live" | "ended" | "unknown",
   "game_ended": true or false,
-  "winner": "yes" or "no" (which side of the market won),
+  "winner": "yes" or "no" (which side of the market won - ONLY if game_ended=true),
   "final_score": "e.g., Jazz 150-147" (if available),
   "confidence": 0-100 (how confident you are in this result),
   "reasoning": "brief explanation"
 }}
 
+GAME STATUS DEFINITIONS:
+- "not_started": Game hasn't begun yet (no live action, future date)
+- "live": Game is IN PROGRESS (look for: "Q1", "Q2", "halftime", "3rd quarter", "bottom 9th", "LIVE", "ongoing", "in progress")
+- "ended": Game is COMPLETELY OVER (look for: "Final", "FT", "Game Over", "final score", "wins", "defeats", "beat")
+- "unknown": Cannot determine status from news
+
 IMPORTANT:
-- Only mark game_ended=true if you're certain the game is COMPLETELY over
-- If news is unclear or game is still in progress, mark game_ended=false
+- Only mark game_ended=true if you're certain the game is COMPLETELY over (not halftime, not intermission)
+- If news shows live action (quarters, innings, periods), mark game_status="live" and game_ended=false
 - For "Will X beat Y?" markets: winner="yes" if X won, winner="no" if Y won
 - Be conservative - only high confidence (90+) if result is clear and verified by multiple sources
+- Look for keywords like "FINAL", "FT", "defeats", "wins" to confirm game ended
 
 Respond with valid JSON only."""
 
