@@ -20,6 +20,7 @@ Features:
 import sys
 import argparse
 from typing import Optional
+from dotenv import load_dotenv
 
 # Import components
 from poly_data.polymarket_client import PolymarketClient
@@ -28,6 +29,11 @@ from near_sure.interactive_ui import InteractiveMarketSelector
 from near_sure.order_manager import NearSureOrderManager
 from near_sure.risk_manager import NearSureRiskManager
 from poly_utils.logging_utils import get_logger
+from poly_utils.proxy_config import setup_proxy
+
+# Load environment variables and setup proxy
+load_dotenv()
+setup_proxy(verbose=False)
 
 
 def trade_mode(dry_run: bool = False):

@@ -22,12 +22,18 @@ import sys
 import argparse
 import time
 from datetime import datetime
+from dotenv import load_dotenv
 
 from poly_data.polymarket_client import PolymarketClient
 from neg_risk_arb.arbitrage_scanner import ArbitrageScanner
 from neg_risk_arb.executor import ArbitrageExecutor
 from neg_risk_arb.risk_manager import ArbitrageRiskManager
 from poly_utils.logging_utils import get_logger
+from poly_utils.proxy_config import setup_proxy
+
+# Load environment variables and setup proxy
+load_dotenv()
+setup_proxy(verbose=False)
 
 
 def scan_mode(config_path='neg_risk_arb/config.yaml'):

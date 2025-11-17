@@ -8,8 +8,12 @@ Usage:
     uv run python test_proxy.py
 """
 
+from dotenv import load_dotenv
 from poly_utils.proxy_config import setup_proxy, get_proxy_session
 import sys
+
+# Load environment variables from .env file
+load_dotenv()
 
 def test_proxy():
     print("\n" + "="*70)

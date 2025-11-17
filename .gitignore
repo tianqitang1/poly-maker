@@ -2,6 +2,7 @@ output.txt
 data/
 credentials.json
 */credentials.json
+.claude/
 # Google Cloud service account credentials
 *-[0-9a-f]*.json
 .env
