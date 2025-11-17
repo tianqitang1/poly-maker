@@ -1,0 +1,174 @@
+# Example configuration for poly_utils LLM and News Feed
+# Copy this to your bot's config.yaml and customize as needed
+
+# ============================================================================
+# LLM CLIENT CONFIGURATION
+# ============================================================================
+llm:
+  # Enable/disable LLM features
+  enabled: true
+
+  # Provider selection: gemini, anthropic, openai, openrouter, deepseek
+  provider: "gemini"  # Recommended for cost/speed balance
+
+  # Rate limiting (adjust based on your API plan)
+  max_requests_per_minute: 15    # Gemini free tier: 15 RPM
+  max_calls_per_hour: 100         # Hourly limit
+  max_cost_per_day: 10.0          # USD daily budget
+
+  # Retry and timeout settings
+  max_retries: 2                  # Number of retries on failure
+  timeout: 10                     # Seconds before timeout
+
+  # Provider-specific settings
+  gemini:
+    model: "gemini-2.5-flash"     # Fast and cheap
+    api_key_env: "GEMINI_API_KEY" # Environment variable name
+
+  anthropic:
+    model: "claude-haiku-3-5"     # Fast Claude model
+    api_key_env: "ANTHROPIC_API_KEY"
+
+  openai:
+    model: "gpt-4o-mini"          # Cheap GPT-4 variant
+    api_key_env: "OPENAI_API_KEY"
+
+  openrouter:
+    model: "google/gemini-2.5-flash"  # Access any model via OpenRouter
+    api_key_env: "OPENROUTER_API_KEY"
+
+  deepseek:
+    model: "deepseek-chat"        # Very cheap alternative
+    api_key_env: "DEEPSEEK_API_KEY"
+
+
+# ============================================================================
+# NEWS FEED CONFIGURATION
+# ============================================================================
+news:
+  # Enable/disable news features
+  enabled: true
+
+  # Cache and refresh settings
+  refresh_interval: 60            # Seconds between fetches
+  max_age: 3600                   # Max age of news items (1 hour)
+  relevance_threshold: 0.6        # 0-1 score for market matching
+
+  # Categories to monitor (remove categories you don't need)
+  categories:
+    - sports
+    - crypto
+    - politics
+    - general
+
+  # ============================================================================
+  # NEWS SOURCES
+  # ============================================================================
+  sources:
+    # ------------------------------------------------------------------------
+    # SPORTS NEWS
+    # ------------------------------------------------------------------------
+    espn_rss:
+      enabled: true
+      leagues:
+        - nfl
+        - nba
+        - mlb
+        - nhl
+        - soccer
+        # - ncaaf  # College football
+        # - ncaab  # College basketball
+
+    thescore_rss:
+      enabled: true
+      leagues:
+        - nfl
+        - nba
+        - mlb
+        - nhl
+
+    # ------------------------------------------------------------------------
+    # CRYPTO NEWS
+    # ------------------------------------------------------------------------
+    coindesk_rss:
+      enabled: false               # Enable for crypto markets
+
+    cointelegraph_rss:
+      enabled: false
+
+    bitcoin_magazine_rss:
+      enabled: false
+
+    decrypt_rss:
+      enabled: false
+
+    # ------------------------------------------------------------------------
+    # POLITICAL NEWS
+    # ------------------------------------------------------------------------
+    politico_rss:
+      enabled: false               # Enable for election/politics markets
+
+    the_hill_rss:
+      enabled: false
+
+    real_clear_politics_rss:
+      enabled: false
+
+    # ------------------------------------------------------------------------
+    # GENERAL NEWS
+    # ------------------------------------------------------------------------
+    reuters_rss:
+      enabled: false               # Enable for general news markets
+
+    ap_news_rss:
+      enabled: false
+
+
+# ============================================================================
+# BOT-SPECIFIC USAGE EXAMPLES
+# ============================================================================
+
+# Example for spike_momentum (sports focus):
+# llm:
+#   enabled: true
+#   provider: "gemini"
+#   min_confidence: 70
+# news:
+#   enabled: true
+#   categories: ["sports"]
+#   sources:
+#     espn_rss: {enabled: true, leagues: [nfl, nba]}
+#     thescore_rss: {enabled: true, leagues: [nfl, nba]}
+
+# Example for crypto arbitrage bot:
+# llm:
+#   enabled: true
+#   provider: "deepseek"  # Cheaper for high-frequency
+# news:
+#   enabled: true
+#   categories: ["crypto"]
+#   sources:
+#     coindesk_rss: {enabled: true}
+#     cointelegraph_rss: {enabled: true}
+
+# Example for election bot:
+# llm:
+#   enabled: true
+#   provider: "anthropic"  # Higher quality for nuanced analysis
+# news:
+#   enabled: true
+#   categories: ["politics"]
+#   sources:
+#     politico_rss: {enabled: true}
+#     the_hill_rss: {enabled: true}
+#     real_clear_politics_rss: {enabled: true}
+
+# Example for market making (sentiment analysis):
+# llm:
+#   enabled: true
+#   provider: "gemini"
+#   max_requests_per_minute: 30  # Higher throughput
+# news:
+#   enabled: true
+#   categories: ["sports", "crypto", "politics"]  # Monitor all
+#   refresh_interval: 30  # More frequent updates
