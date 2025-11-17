@@ -17,14 +17,14 @@
 - [ ] Create `spike_momentum/` directory
 - [ ] Create `__init__.py`
 - [ ] Create `main.py` with CLI structure
-- [ ] Create `config.yaml` with base parameters
+- [ ] Create `config.yaml.example` with base parameters (config.yaml gitignored)
 - [ ] Add environment variables to `.env.example`:
   - `SPIKE_MOMENTUM_PK`
   - `SPIKE_MOMENTUM_BROWSER_ADDRESS`
   - News API keys (to be determined)
 
 ### 1.2 Configuration System
-- [ ] Define `config.yaml` schema
+- [ ] Define `config.yaml.example` schema
 - [ ] Implement config loading in Python
 - [ ] Add validation for required parameters
 - [ ] Support for live vs. dry-run modes
@@ -390,7 +390,9 @@ python -m spike_momentum.main backtest --data historical.csv
 
 ---
 
-## Configuration Parameters (config.yaml)
+## Configuration Parameters (config.yaml.example)
+
+**Note:** Copy `config.yaml.example` to `config.yaml` and customize. The `config.yaml` file is gitignored for security.
 
 ### Technical Spike Detection
 ```yaml

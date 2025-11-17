@@ -51,7 +51,15 @@ pip install anthropic            # For Claude
 pip install openai               # For GPT or OpenRouter
 ```
 
-### 2. Configure Environment
+### 2. Create Configuration File
+
+Copy the example configuration:
+
+```bash
+cp spike_momentum/config.yaml.example spike_momentum/config.yaml
+```
+
+### 3. Configure Environment
 
 Add to your `.env` file:
 
@@ -71,9 +79,7 @@ Get API keys:
 - Anthropic: https://console.anthropic.com/
 - OpenAI: https://platform.openai.com/
 
-### 3. Configure Strategy
-
-Edit `spike_momentum/config.yaml`:
+**Note:** Your `config.yaml` file is gitignored for security. Never commit it to version control!
 
 ```yaml
 llm:

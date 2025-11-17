@@ -15,6 +15,7 @@ logs/
 # User-specific configuration files
 neg_risk_arb/config.yaml
 neg_risk_arb/arb_history.json
+spike_momentum/config.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
