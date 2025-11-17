@@ -18,6 +18,7 @@ from poly_data.polymarket_client import PolymarketClient
 from spike_momentum.spike_detector import SpikeDetector, Spike
 from spike_momentum.news_monitor import SportsNewsMonitor
 from spike_momentum.llm_analyzer import LLMAnalyzer
+from spike_momentum.post_res_arb import PostResolutionArbitrage
 from poly_utils.logging_utils import get_logger
 
 logger = get_logger('spike_momentum.scanner')
@@ -66,6 +67,7 @@ class MarketScanner:
         spike_detector: SpikeDetector,
         news_monitor: SportsNewsMonitor,
         llm_analyzer: Optional[LLMAnalyzer] = None,
+        post_res_arb: Optional[PostResolutionArbitrage] = None,
         config: Optional[Dict[str, Any]] = None
     ):
         """
@@ -76,12 +78,14 @@ class MarketScanner:
             spike_detector: Spike detector instance
             news_monitor: News monitor instance
             llm_analyzer: Optional LLM analyzer
+            post_res_arb: Optional post-resolution arb detector
             config: Optional configuration
         """
         self.client = client
         self.spike_detector = spike_detector
         self.news_monitor = news_monitor
         self.llm_analyzer = llm_analyzer
+        self.post_res_arb = post_res_arb
         self.config = config or {}
 
         # Market data
@@ -91,7 +95,13 @@ class MarketScanner:
         # Compile regex patterns once
         self.keyword_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.SPORTS_KEYWORDS]
 
-        logger.info("Initialized MarketScanner with word-boundary keyword matching")
+        strategies = []
+        if spike_detector.enabled:
+            strategies.append("spike_momentum")
+        if post_res_arb and post_res_arb.enabled:
+            strategies.append("post_res_arb")
+
+        logger.info(f"Initialized MarketScanner with strategies: {strategies}")
 
     def fetch_sports_markets(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -342,17 +352,32 @@ class MarketScanner:
                 if bids and asks:
                     best_bid = float(bids[0]['price']) if bids else 0.0
                     best_ask = float(asks[0]['price']) if asks else 0.0
+                    mid_price = (best_bid + best_ask) / 2
 
-                    # Update spike detector
-                    spike = self.spike_detector.update_price(
-                        market_id=condition_id,
-                        market_question=question,
-                        best_bid=best_bid,
-                        best_ask=best_ask
-                    )
+                    # Check for spike momentum opportunity
+                    if self.spike_detector.enabled:
+                        spike = self.spike_detector.update_price(
+                            market_id=condition_id,
+                            market_question=question,
+                            best_bid=best_bid,
+                            best_ask=best_ask
+                        )
 
-                    if spike:
-                        await self._handle_spike(spike)
+                        if spike:
+                            await self._handle_spike(spike)
+
+                    # Check for post-resolution arb opportunity
+                    if self.post_res_arb and self.post_res_arb.enabled:
+                        market_info = self.sports_markets.get(condition_id, {})
+                        arb_opp = await self.post_res_arb.check_market_for_arb(
+                            market_id=condition_id,
+                            market_question=question,
+                            current_price=mid_price,
+                            market_info=market_info
+                        )
+
+                        if arb_opp:
+                            await self._handle_post_res_arb(arb_opp)
 
             elif event_type == 'price_change':
                 # Price change update - could implement incremental updates here
@@ -409,6 +434,19 @@ class MarketScanner:
 
         print(f"{'='*120}\n")
 
+    async def _handle_post_res_arb(self, opportunity: Dict[str, Any]):
+        """Handle post-resolution arb opportunity."""
+        logger.info(f"Post-res arb opportunity: {opportunity}")
+
+        # Execute arb (dry-run for now)
+        dry_run = self.config.get('operation', {}).get('dry_run', True)
+        result = await self.post_res_arb.execute_arb(opportunity, dry_run=dry_run)
+
+        if result.get('success'):
+            logger.info(f"Arb executed successfully: {result}")
+        else:
+            logger.warning(f"Arb execution failed: {result.get('error')}")
+
 
 async def run_live_scanner(config_path: str = 'spike_momentum/config.yaml'):
     """Run the live market scanner."""
@@ -431,16 +469,41 @@ async def run_live_scanner(config_path: str = 'spike_momentum/config.yaml'):
     news_monitor = SportsNewsMonitor(config.get('news', {}))
     spike_detector = SpikeDetector(config.get('spike_detection', {}))
 
-    # LLM analyzer (optional)
-    llm_analyzer = None
+    # LLM provider (shared across strategies)
+    llm_provider = None
     if config.get('llm', {}).get('enabled', True):
         try:
             llm_provider = LLMProvider(config['llm'])
-            llm_analyzer = LLMAnalyzer(llm_provider, config['llm'])
-            print(f"✓ LLM analyzer initialized ({config['llm']['provider']})\n")
+            print(f"✓ LLM provider initialized ({config['llm']['provider']})\n")
         except Exception as e:
-            logger.warning(f"LLM analyzer disabled: {e}")
-            print(f"⚠️  LLM analyzer disabled: {e}\n")
+            logger.warning(f"LLM provider disabled: {e}")
+            print(f"⚠️  LLM provider disabled: {e}\n")
+
+    # LLM analyzer (for spike momentum)
+    llm_analyzer = None
+    if llm_provider:
+        llm_analyzer = LLMAnalyzer(llm_provider, config['llm'])
+
+    # Post-resolution arb (separate strategy)
+    post_res_arb = None
+    if config.get('post_resolution_arb', {}).get('enabled', False):
+        post_res_arb = PostResolutionArbitrage(
+            client=client,
+            news_monitor=news_monitor,
+            llm_provider=llm_provider,
+            config=config
+        )
+        print(f"✓ Post-resolution arb initialized\n")
+
+    # Display capital allocation
+    capital_config = config.get('capital', {})
+    if capital_config:
+        total = capital_config.get('total_capital', 0)
+        spike_pct = capital_config.get('spike_momentum', 0) * 100
+        arb_pct = capital_config.get('post_resolution_arb', 0) * 100
+        print(f"Capital Allocation (${total:.0f} total):")
+        print(f"  Spike Momentum: {spike_pct:.0f}% (${total * spike_pct/100:.0f})")
+        print(f"  Post-Res Arb: {arb_pct:.0f}% (${total * arb_pct/100:.0f})\n")
 
     # Initialize scanner
     scanner = MarketScanner(
@@ -448,6 +511,7 @@ async def run_live_scanner(config_path: str = 'spike_momentum/config.yaml'):
         spike_detector=spike_detector,
         news_monitor=news_monitor,
         llm_analyzer=llm_analyzer,
+        post_res_arb=post_res_arb,
         config=config
     )
 

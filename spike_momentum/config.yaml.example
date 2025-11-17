@@ -1,5 +1,21 @@
 # Spike Momentum Bot Configuration
 
+# Capital Allocation (must sum to <= 1.0)
+capital:
+  spike_momentum: 0.7                   # 70% for spike trading
+  post_resolution_arb: 0.3              # 30% for post-resolution arb
+  total_capital: 1000                   # Total $ allocated to this bot
+
+# Post-Resolution Arbitrage Settings
+post_resolution_arb:
+  enabled: true                         # Enable post-resolution arb
+  min_profit_cents: 0.5                 # Minimum 0.5c profit per share
+  max_purchase_price: 0.995             # Don't buy above 99.5c
+  min_confidence: 90                    # 90% confidence required
+  max_position_size: 100                # Max $ per arb trade
+  capital_allocation: 0.3               # Uses 30% of total capital (from above)
+  sweep_aggressiveness: 0.995           # Sweep order book up to this price
+
 # LLM Provider Settings
 llm:
   enabled: true
