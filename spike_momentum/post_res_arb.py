@@ -100,6 +100,10 @@ class PostResolutionArbitrage:
         # Verified results cache
         self.verified_results: Dict[str, GameResult] = {}  # market_id -> result
 
+        # Cache for "not ended yet" markets to avoid repeated LLM calls
+        # Format: {market_id: (last_checked_timestamp, end_date_iso)}
+        self.not_ended_cache: Dict[str, tuple] = {}
+
         # Executed arbs (to avoid duplicates)
         self.executed_arbs = set()  # market_ids we've already arbed
 
@@ -135,12 +139,20 @@ class PostResolutionArbitrage:
         if market_id in self.executed_arbs:
             return None
 
+        # Check if market is near-close or worth checking
+        end_date_iso = market_info.get('end_date', '')
+        if not self._should_check_market(market_id, end_date_iso):
+            return None
+
         # Check if we have a verified result for this market
         if market_id not in self.verified_results:
             # Try to verify result
             result = await self._verify_game_result(market_id, market_question)
             if result and result.confidence >= self.min_confidence:
                 self.verified_results[market_id] = result
+                # Remove from not_ended_cache since it ended
+                if market_id in self.not_ended_cache:
+                    del self.not_ended_cache[market_id]
             else:
                 return None  # Can't verify result yet
 
@@ -190,6 +202,83 @@ class PostResolutionArbitrage:
         logger.info(f"Post-resolution arb opportunity: {opportunity}")
         return opportunity
 
+    def _should_check_market(self, market_id: str, end_date_iso: str) -> bool:
+        """
+        Determine if we should check this market based on end date and cache.
+
+        Strategy:
+        - Markets ending >7 days away: Check once every 24 hours
+        - Markets ending in 1-7 days: Check once every 6 hours
+        - Markets ending in <24 hours: Check every 30 minutes
+        - Markets past end_date: Always check (might have arb!)
+
+        Args:
+            market_id: Market identifier
+            end_date_iso: ISO format end date (e.g., "2026-12-31T23:59:59Z")
+
+        Returns:
+            True if should check, False if should skip
+        """
+        now = datetime.now()
+
+        # Parse end date if available
+        end_date = None
+        if end_date_iso:
+            try:
+                # Handle both formats: "2026-12-31T23:59:59Z" and "2026-12-31T23:59:59.000000Z"
+                end_date_iso = end_date_iso.replace('Z', '+00:00')
+                from dateutil import parser
+                end_date = parser.parse(end_date_iso).replace(tzinfo=None)
+            except Exception as e:
+                logger.debug(f"Could not parse end_date '{end_date_iso}': {e}")
+
+        # Check cache for "not ended yet" markets
+        if market_id in self.not_ended_cache:
+            last_checked, _ = self.not_ended_cache[market_id]
+            time_since_check = (now - last_checked).total_seconds()
+
+            if end_date:
+                time_until_end = (end_date - now).total_seconds()
+
+                # Market ended - always check!
+                if time_until_end <= 0:
+                    return True
+
+                # >7 days away: check every 24 hours
+                if time_until_end > 7 * 24 * 3600:
+                    if time_since_check < 24 * 3600:  # 24 hours
+                        logger.debug(f"Skipping {market_id[:8]}... (ends in {time_until_end/86400:.1f} days, checked {time_since_check/3600:.1f}h ago)")
+                        return False
+
+                # 1-7 days away: check every 6 hours
+                elif time_until_end > 24 * 3600:
+                    if time_since_check < 6 * 3600:  # 6 hours
+                        logger.debug(f"Skipping {market_id[:8]}... (ends in {time_until_end/3600:.1f} hours, checked {time_since_check/3600:.1f}h ago)")
+                        return False
+
+                # <24 hours: check every 30 minutes
+                else:
+                    if time_since_check < 30 * 60:  # 30 minutes
+                        logger.debug(f"Skipping {market_id[:8]}... (ends in {time_until_end/3600:.1f} hours, checked {time_since_check/60:.1f}m ago)")
+                        return False
+            else:
+                # No end_date, use conservative check frequency (6 hours)
+                if time_since_check < 6 * 3600:
+                    logger.debug(f"Skipping {market_id[:8]}... (no end_date, checked {time_since_check/3600:.1f}h ago)")
+                    return False
+
+        # If we have end_date and it's >30 days away, skip entirely
+        if end_date:
+            time_until_end = (end_date - now).total_seconds()
+            if time_until_end > 30 * 24 * 3600:  # >30 days
+                logger.debug(f"Skipping {market_id[:8]}... (ends in {time_until_end/86400:.0f} days - too far away)")
+                # Cache it so we don't keep checking
+                self.not_ended_cache[market_id] = (now, end_date_iso)
+                return False
+
+        # Should check
+        return True
+
     async def _verify_game_result(
         self,
         market_id: str,
@@ -236,6 +325,8 @@ class PostResolutionArbitrage:
             # Validate required fields
             if 'game_ended' not in data or not data['game_ended']:
                 logger.info(f"Game not ended yet: {market_question}")
+                # Cache this result to avoid repeated checks
+                self.not_ended_cache[market_id] = (datetime.now(), None)
                 return None
 
             if 'winner' not in data or 'confidence' not in data:
