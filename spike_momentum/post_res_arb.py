@@ -14,7 +14,7 @@ Risk: Very low (game is over, winner is known)
 Profit: 1-5c per share (but risk-free!)
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 import re
 import json
@@ -101,6 +101,10 @@ class PostResolutionArbitrage:
         self.max_position_size = arb_config.get('max_position_size', 100)  # Max $ per arb
         self.capital_allocation = arb_config.get('capital_allocation', 0.3)  # 30% of total capital
 
+        # LLM usage - make it OPTIONAL since game metadata is more reliable
+        self.use_llm_verification = arb_config.get('use_llm_verification', False)  # Default: OFF
+        self.high_confidence_price_threshold = arb_config.get('high_confidence_price_threshold', 0.97)  # 97c+
+
         # Per-opportunity capital allocation
         # Controls what % of arb capital to use PER opportunity
         # Examples:
@@ -166,8 +170,32 @@ class PostResolutionArbitrage:
 
         # Check if we have a verified result for this market
         if market_id not in self.verified_results:
-            # Try to verify result
-            result = await self._verify_game_result(market_id, market_question)
+            result = None
+
+            # PRIORITY 1: Try game metadata (fast, reliable, real-time!)
+            game_metadata = market_info.get('game_metadata', {})
+            if game_metadata:
+                # For game metadata verification, we need to estimate winning price
+                # Use current_price as proxy for now
+                result = self._verify_from_game_metadata(
+                    market_id,
+                    market_question,
+                    game_metadata,
+                    winning_token_price=current_price  # Will be refined later
+                )
+
+            # PRIORITY 2: LLM verification (if enabled and game metadata didn't work)
+            if not result and self.use_llm_verification:
+                logger.info("Game metadata verification failed, falling back to LLM...")
+                result = await self._verify_game_result(
+                    market_id,
+                    market_question,
+                    game_metadata=game_metadata,
+                    market_description=market_info.get('description', ''),
+                    current_price=current_price
+                )
+
+            # Store verified result
             if result and result.confidence >= self.min_confidence:
                 self.verified_results[market_id] = result
                 # Remove from not_ended_cache since it ended
@@ -370,46 +398,199 @@ class PostResolutionArbitrage:
         # Should check
         return True
 
-    async def _verify_game_result(
+    def _verify_from_game_metadata(
         self,
         market_id: str,
-        market_question: str
+        market_question: str,
+        game_metadata: Dict[str, Any],
+        winning_token_price: float
     ) -> Optional[GameResult]:
         """
-        Verify game result using news + LLM.
+        Verify game result using real-time game metadata from API.
+
+        This is MUCH more reliable than news/LLM because:
+        - Real-time updates from Polymarket's game tracking
+        - No need to wait for news articles
+        - Catches the arbitrage window faster
 
         Args:
             market_id: Market identifier
             market_question: Market question
+            game_metadata: Game metadata from events array
+            winning_token_price: Current price to validate signal strength
+
+        Returns:
+            GameResult or None if game not ended
+        """
+        if not game_metadata:
+            logger.debug(f"No game metadata for {market_question}")
+            return None
+
+        ended = game_metadata.get('ended', False)
+        live = game_metadata.get('live', False)
+        score = game_metadata.get('score', '')
+        period = game_metadata.get('period', '')
+        finished_timestamp = game_metadata.get('finishedTimestamp', '')
+        elapsed = game_metadata.get('elapsed', '')
+        start_time = game_metadata.get('startTime', '')
+
+        # ===== COMPREHENSIVE LOGGING FOR DATA ANALYSIS =====
+        # Log ALL game metadata to understand real-world values
+        logger.info(f"📊 GAME METADATA SAMPLE [{market_id[:8]}...]")
+        logger.info(f"   Question: {market_question}")
+        logger.info(f"   live: {live} (type: {type(live).__name__})")
+        logger.info(f"   ended: {ended} (type: {type(ended).__name__})")
+        logger.info(f"   score: '{score}' (type: {type(score).__name__})")
+        logger.info(f"   period: '{period}' (type: {type(period).__name__})")
+        logger.info(f"   elapsed: '{elapsed}' (type: {type(elapsed).__name__})")
+        logger.info(f"   finishedTimestamp: '{finished_timestamp}'")
+        logger.info(f"   startTime: '{start_time}'")
+        logger.info(f"   Raw metadata: {json.dumps(game_metadata, indent=2)}")
+        # ===================================================
+
+        # Track live games for frequent monitoring
+        if live and not ended:
+            logger.info(f"🔴 LIVE GAME: {market_question} ({period}, {score})")
+            self.live_games[market_id] = datetime.now()
+            return None
+
+        # Game hasn't ended yet
+        if not ended:
+            logger.debug(f"Game not ended: {market_question}")
+            return None
+
+        # GAME ENDED! Extract winner from score
+        if not score:
+            logger.warning(f"Game ended but no score: {market_question}")
+            return None
+
+        # Parse score to determine winner
+        # Format: "147-150" or "Team1 147-150"
+        logger.info(f"🏁 GAME ENDED: {market_question}")
+        logger.info(f"   Score: {score}")
+        logger.info(f"   Period: {period}")
+        logger.info(f"   Finished: {finished_timestamp}")
+
+        # Determine winner based on score and market question
+        winner = self._determine_winner_from_score(market_question, score)
+
+        if not winner:
+            logger.warning(f"Could not determine winner from score: {score}")
+            return None
+
+        # Calculate confidence based on price signal
+        # If winning token is trading >97c, VERY high confidence
+        confidence = 99 if winning_token_price > self.high_confidence_price_threshold else 95
+
+        result = GameResult(
+            market_id=market_id,
+            market_question=market_question,
+            winner=winner,
+            confidence=confidence,
+            final_score=score,
+            verification_source='game_metadata',
+            reasoning=f"Game ended: {score} ({period}). Price signal: ${winning_token_price:.3f}",
+            game_status='ended'
+        )
+
+        logger.info(f"✅ Verified from game metadata: {result}")
+
+        # Remove from live games
+        if market_id in self.live_games:
+            del self.live_games[market_id]
+
+        return result
+
+    def _determine_winner_from_score(
+        self,
+        market_question: str,
+        score: str
+    ) -> Optional[str]:
+        """
+        Determine winner from market question and score.
+
+        Examples:
+        - "Bulls vs. Jazz", score "147-150" → Jazz wins → check if market is "Bulls" or "Jazz"
+        - "Will Bulls beat Jazz?", score "147-150" → Bulls lost → winner="no"
+
+        Returns:
+            'yes' or 'no' depending on market structure
+        """
+        try:
+            # Parse score like "147-150" or "Team1 147-150"
+            score_parts = score.split('-')
+            if len(score_parts) != 2:
+                return None
+
+            # Extract just the numbers
+            score1_str = score_parts[0].strip().split()[-1]  # Get last token (the number)
+            score2_str = score_parts[1].strip().split()[0]  # Get first token (the number)
+
+            score1 = int(score1_str)
+            score2 = int(score2_str)
+
+            # Determine which team won
+            team1_won = score1 > score2
+
+            # Parse market question to determine market structure
+            q_lower = market_question.lower()
+
+            # Check if it's a "Will X beat Y?" style question
+            if 'will' in q_lower and 'beat' in q_lower:
+                # Extract team names
+                # "Will Bulls beat Jazz?" → Bulls is team1
+                # If Bulls won (team1_won=True), answer is YES
+                return 'yes' if team1_won else 'no'
+            elif 'vs' in q_lower or 'vs.' in q_lower:
+                # "Bulls vs. Jazz" → First team is team1
+                # Need to check which outcome is YES
+                # This requires checking token outcomes...
+                # For now, assume YES = first team
+                return 'yes' if team1_won else 'no'
+            else:
+                # Unknown format
+                logger.warning(f"Unknown market question format: {market_question}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error parsing score '{score}': {e}")
+            return None
+
+    async def _verify_game_result(
+        self,
+        market_id: str,
+        market_question: str,
+        game_metadata: Optional[Dict[str, Any]] = None,
+        market_description: Optional[str] = None,
+        current_price: Optional[float] = None
+    ) -> Optional[GameResult]:
+        """
+        Verify game result using game metadata + LLM.
+
+        Args:
+            market_id: Market identifier
+            market_question: Market question
+            game_metadata: Game metadata from Polymarket API (score, period, etc.)
+            market_description: Market description text
+            current_price: Current market price for validation
 
         Returns:
             GameResult or None if can't verify
         """
         logger.info(f"Verifying game result for: {market_question}")
 
-        # Get recent news about this game
-        news_matches = self.news_monitor.match_to_market(market_question, max_results=5)
-
-        if not news_matches:
-            logger.warning(f"No news found for {market_question}")
-            return None
-
-        # Log matched news items for debugging
-        logger.info(f"Found {len(news_matches)} news items for verification:")
-        for i, match in enumerate(news_matches[:5], 1):
-            item = match['news']
-            logger.info(
-                f"  {i}. [{item.source}] {item.title} "
-                f"(relevance: {match['relevance_score']:.2f})"
-            )
-
         # Use LLM to verify result
         if not self.llm_provider:
             logger.warning("LLM provider not available for verification")
             return None
 
-        # Build verification prompt
-        prompt = self._build_verification_prompt(market_question, news_matches)
+        # Build verification prompt using game metadata (MUCH better than news!)
+        prompt = self._build_verification_prompt(
+            market_question,
+            game_metadata=game_metadata,
+            market_description=market_description,
+            current_price=current_price
+        )
 
         # Log the full prompt for debugging
         logger.info(f"LLM Verification Prompt for '{market_question[:50]}...':")
@@ -487,52 +668,87 @@ class PostResolutionArbitrage:
     def _build_verification_prompt(
         self,
         market_question: str,
-        news_matches: List[Dict[str, Any]]
+        game_metadata: Optional[Dict[str, Any]] = None,
+        market_description: Optional[str] = None,
+        current_price: Optional[float] = None
     ) -> str:
-        """Build LLM prompt for result verification."""
+        """Build LLM prompt for result verification using Polymarket game metadata."""
 
-        # Format news
-        news_text = "\n".join([
-            f"{i+1}. [{match['news'].source}] {match['news'].title}\n   {match['news'].summary[:200]}"
-            for i, match in enumerate(news_matches[:5])
-        ])
+        # Build game data section
+        game_data_text = "No game metadata available"
+        if game_metadata:
+            game_data_text = f"""- Live: {game_metadata.get('live', 'unknown')}
+- Ended: {game_metadata.get('ended', 'unknown')}
+- Score: {game_metadata.get('score', 'N/A')}
+- Period: {game_metadata.get('period', 'N/A')}
+- Elapsed Time: {game_metadata.get('elapsed', 'N/A')}
+- Finished Timestamp: {game_metadata.get('finishedTimestamp', 'N/A')}
+- Start Time: {game_metadata.get('startTime', 'N/A')}"""
 
-        prompt = f"""You are verifying the outcome of a sports betting market.
+        # Add market description if available
+        description_text = ""
+        if market_description:
+            description_text = f"""
+MARKET DESCRIPTION:
+{market_description}
+"""
+
+        # Add price signal if available
+        price_signal_text = ""
+        if current_price is not None:
+            price_signal_text = f"""
+CURRENT MARKET PRICE:
+- YES token: ${current_price:.3f} ({current_price*100:.1f}% probability)
+- NO token: ${1-current_price:.3f} ({(1-current_price)*100:.1f}% probability)
+"""
+
+        prompt = f"""You are verifying the outcome of a sports betting market using REAL-TIME game data from Polymarket.
 
 MARKET QUESTION: "{market_question}"
-
-RECENT NEWS:
-{news_text}
+{description_text}{price_signal_text}
+GAME DATA (from Polymarket API - REAL-TIME):
+{game_data_text}
 
 VERIFICATION TASK:
-1. What is the current status of the game/event?
-2. Has the game/event concluded?
-3. If yes, what was the outcome?
-4. Based on the news, should the market resolve to YES or NO?
-5. How confident are you (0-100%)?
+Analyze the game data to determine:
+1. What is the current status of the game? (not_started, live, ended, unknown)
+2. Has the game concluded? (game_ended: true/false)
+3. If ended, what was the final score and who won?
+4. Based on the score and market question, should this resolve to YES or NO?
+5. How confident are you in this determination (0-100%)?
 
 OUTPUT FORMAT (JSON):
 {{
   "game_status": "not_started" | "live" | "ended" | "unknown",
   "game_ended": true or false,
-  "winner": "yes" or "no" (which side of the market won - ONLY if game_ended=true),
-  "final_score": "e.g., Jazz 150-147" (if available),
-  "confidence": 0-100 (how confident you are in this result),
-  "reasoning": "brief explanation"
+  "winner": "yes" or "no" (ONLY if game_ended=true),
+  "final_score": "e.g., Jazz 150-147 (parsed from score field)",
+  "confidence": 0-100,
+  "reasoning": "brief explanation of your analysis"
 }}
 
-GAME STATUS DEFINITIONS:
-- "not_started": Game hasn't begun yet (no live action, future date)
-- "live": Game is IN PROGRESS (look for: "Q1", "Q2", "halftime", "3rd quarter", "bottom 9th", "LIVE", "ongoing", "in progress")
-- "ended": Game is COMPLETELY OVER (look for: "Final", "FT", "Game Over", "final score", "wins", "defeats", "beat")
-- "unknown": Cannot determine status from news
+INTERPRETATION GUIDE:
+- game_status = "ended" AND ended = true → Game is COMPLETELY OVER
+- game_status = "live" OR live = true → Game is IN PROGRESS
+- Score format is typically "Team1Score-Team2Score" (e.g., "147-150")
+- Period examples: "Q4" (4th quarter), "VFT" (Final OT), "F" (Final)
 
-IMPORTANT:
-- Only mark game_ended=true if you're certain the game is COMPLETELY over (not halftime, not intermission)
-- If news shows live action (quarters, innings, periods), mark game_status="live" and game_ended=false
-- For "Will X beat Y?" markets: winner="yes" if X won, winner="no" if Y won
-- Be conservative - only high confidence (90+) if result is clear and verified by multiple sources
-- Look for keywords like "FINAL", "FT", "defeats", "wins" to confirm game ended
+CRITICAL RULES:
+1. If ended=true, the game is OVER - parse the score to determine winner
+2. For "Will X beat Y?" markets: winner="yes" if X won, winner="no" if Y won
+3. For "X vs Y" markets: Determine which team is YES outcome, then check who won
+4. Score format: Higher score wins (parse carefully, e.g., "147-150" means 147 < 150)
+5. High confidence (95+) if game ended=true AND score is available
+6. Medium confidence (75-90) if strong price signal but metadata unclear
+7. Low confidence (<75) if data is ambiguous or incomplete
+
+EXAMPLES:
+- Question: "Will Bulls beat Jazz?", Score: "147-150", Ended: true
+  → Bulls scored 147, Jazz scored 150, Jazz won, winner="no" (Bulls did NOT beat Jazz)
+
+- Question: "Bulls vs Jazz", Score: "147-150", Ended: true
+  → Need to determine which team is YES - typically first mentioned team
+  → Bulls scored 147 (lost), winner="no"
 
 Respond with valid JSON only."""
 

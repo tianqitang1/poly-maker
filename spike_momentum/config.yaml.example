@@ -25,6 +25,12 @@ post_resolution_arb:
   #   0.01 = 1%  - Up to 100 concurrent arbs (very large accounts)
   per_opportunity_allocation: 1.0       # Default: 100% for small test accounts
 
+  # Game Metadata Verification (NEW! - Much faster than news/LLM)
+  # Uses real-time game data from Polymarket API (live, ended, score, period, finishedTimestamp)
+  # This catches arbitrage opportunities MUCH faster than waiting for news articles
+  use_llm_verification: false           # Use LLM as backup verification? (default: false, game metadata is very reliable)
+  high_confidence_price_threshold: 0.97 # If winning token >97c, treat as 99% confidence (strong price signal)
+
 # LLM Provider Settings
 llm:
   enabled: true

@@ -68,30 +68,36 @@ class LLMAnalyzer:
         current_price: float,
         previous_price: float,
         price_change_pct: float,
-        news_items: List[NewsItem],
+        game_metadata: Optional[Dict[str, Any]] = None,
+        market_description: Optional[str] = None,
+        news_items: Optional[List[NewsItem]] = None,
         additional_context: Optional[Dict[str, Any]] = None
     ) -> Optional[SpikeAnalysis]:
         """
-        Analyze whether a price spike is justified.
+        Analyze whether a price spike is justified using Polymarket game data.
 
         Args:
             market_question: The Polymarket question
             current_price: Current market price (0-1)
             previous_price: Price before spike (0-1)
             price_change_pct: Percentage change (e.g., 0.15 for 15%)
-            news_items: Relevant news items
-            additional_context: Optional extra context (game time, score, etc.)
+            game_metadata: Real-time game data from Polymarket (score, period, live, etc.)
+            market_description: Market description text
+            news_items: Optional news items (fallback if game_metadata unavailable)
+            additional_context: Optional extra context
 
         Returns:
             SpikeAnalysis object or None if analysis failed
         """
-        # Build prompt
+        # Build prompt using game metadata (preferred) or news (fallback)
         prompt = self._build_sports_prompt(
             market_question=market_question,
             current_price=current_price,
             previous_price=previous_price,
             price_change_pct=price_change_pct,
-            news_items=news_items,
+            game_metadata=game_metadata,
+            market_description=market_description,
+            news_items=news_items or [],
             additional_context=additional_context
         )
 
@@ -125,63 +131,104 @@ class LLMAnalyzer:
         current_price: float,
         previous_price: float,
         price_change_pct: float,
-        news_items: List[NewsItem],
-        additional_context: Optional[Dict[str, Any]]
+        game_metadata: Optional[Dict[str, Any]] = None,
+        market_description: Optional[str] = None,
+        news_items: Optional[List[NewsItem]] = None,
+        additional_context: Optional[Dict[str, Any]] = None
     ) -> str:
-        """Build LLM prompt for sports market analysis."""
+        """Build LLM prompt for sports market analysis using Polymarket game data."""
 
-        # Format news items
-        news_text = self._format_news_items(news_items)
+        # Build market description section
+        description_text = ""
+        if market_description:
+            description_text = f"""
+MARKET DESCRIPTION:
+{market_description}
+"""
+
+        # Build game data section (PRIORITY DATA!)
+        game_data_text = ""
+        if game_metadata:
+            game_data_text = f"""
+REAL-TIME GAME DATA (from Polymarket API):
+- Live: {game_metadata.get('live', 'unknown')}
+- Ended: {game_metadata.get('ended', 'unknown')}
+- Score: {game_metadata.get('score', 'N/A')}
+- Period: {game_metadata.get('period', 'N/A')}
+- Elapsed Time: {game_metadata.get('elapsed', 'N/A')}
+- Finished Timestamp: {game_metadata.get('finishedTimestamp', 'N/A')}
+- Start Time: {game_metadata.get('startTime', 'N/A')}
+"""
+
+        # Format news items (OPTIONAL - only if game data missing)
+        news_text = ""
+        if news_items:
+            formatted_news = self._format_news_items(news_items)
+            news_text = f"""
+RECENT NEWS (supplementary):
+{formatted_news}
+"""
 
         # Build prompt
         prompt = f"""You are an expert sports analyst evaluating prediction market price movements.
 
 MARKET QUESTION: "{market_question}"
-
+{description_text}
 PRICE MOVEMENT:
 - Previous price: {previous_price:.3f} ({previous_price*100:.1f}% probability)
 - Current price: {current_price:.3f} ({current_price*100:.1f}% probability)
 - Change: {price_change_pct:+.1f}% ({"up" if price_change_pct > 0 else "down"})
-
-RECENT NEWS:
-{news_text}
-
-"""
+{game_data_text}{news_text}"""
 
         # Add additional context if provided
         if additional_context:
             context_text = self._format_additional_context(additional_context)
             if context_text:
-                prompt += f"""ADDITIONAL CONTEXT:
+                prompt += f"""
+ADDITIONAL CONTEXT:
 {context_text}
-
 """
 
         # Add analysis instructions
-        prompt += """ANALYSIS TASK:
-Evaluate whether this price movement is justified based on the news and context.
+        prompt += """
+ANALYSIS TASK:
+Evaluate whether this price movement is justified based on the REAL-TIME GAME DATA and market context.
 
-Consider:
-1. Does the news directly relate to this market question?
-2. Does the news support the direction of the price movement?
-3. Is this information likely already priced in, or is it fresh?
-4. How close is this market to resolution? (game ending, event concluded, etc.)
-5. What is the confidence level that this price movement is justified?
+KEY CONSIDERATIONS:
+1. GAME STATUS: Is the game live, ended, or not started?
+2. SCORE IMPACT: If live, is the current score consistent with the price movement?
+   - Examples: Team up 20 points → higher YES probability justified
+   - Close game, late period → higher volatility expected
+   - Blowout game → less uncertainty, price should be extreme
+3. TIME REMAINING: How much game time is left? (from period + elapsed)
+   - Late game (Q4, 9th inning) → high confidence in current leader
+   - Early game (Q1, 1st inning) → lots of uncertainty, momentum can shift
+4. PRICE SIGNAL: Does the price change match the game situation?
+   - Trailing team price drops = justified
+   - Winning team price rises = justified
+   - Price spike without game change = potentially unjustified
+5. RESOLUTION TIMING: How close is this market to resolving?
 
 OUTPUT FORMAT (JSON):
-{
+{{
   "justified": true or false,
   "confidence": 0-100 (how confident you are in your analysis),
-  "reasoning": "detailed explanation of your analysis",
+  "reasoning": "detailed explanation using game data (score, period, time, etc.)",
   "near_resolution": true or false (is this market close to resolving?),
-  "estimated_time_to_resolution": "e.g., '5 minutes', '2 hours', 'tomorrow', null if unknown",
-  "recommendation": "buy", "sell", or "hold",
-  "risk_factors": ["list", "of", "potential", "risks"]
-}
+  "estimated_time_to_resolution": "e.g., '2 minutes' (if Q4, 2:00 left), '1 hour' (if halftime), null if unknown",
+  "recommendation": "buy" (price will continue up), "sell" (price will reverse), or "hold" (wait for more data),
+  "risk_factors": ["list", "of", "potential", "risks", "based", "on", "game", "context"]
+}}
 
-Think step-by-step about the probability of the outcome given the current situation.
-For sports: consider game time remaining, current score, typical win probabilities.
-Be objective and data-driven. Avoid being swayed by excitement or narratives.
+SPORT-SPECIFIC ANALYSIS:
+- Basketball: 10+ point lead in Q4 with <5 min = very high confidence for leader
+- Football: 14+ point lead in Q4 with <5 min = high confidence (2+ possession game)
+- Baseball: 3+ run lead in 9th = high confidence
+- Soccer: 2+ goal lead in 80+ minute = high confidence
+- Close games (<1 possession/goal) = medium confidence until final whistle
+
+CRITICAL: Base your analysis on GAME DATA (score, period, time), not news headlines.
+Think probabilistically: given the current score and time, what's the win probability?
 
 Respond with valid JSON only."""
 

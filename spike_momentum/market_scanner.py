@@ -138,6 +138,28 @@ class MarketScanner:
                     yes_token = tokens[0].get('token_id', '')
                     no_token = tokens[1].get('token_id', '')
 
+                    # Extract game metadata from events (real-time game status!)
+                    events = market.get('events', [])
+                    game_metadata = {}
+                    if events and len(events) > 0:
+                        event = events[0]
+                        game_metadata = {
+                            'live': event.get('live', False),
+                            'ended': event.get('ended', False),
+                            'score': event.get('score', ''),
+                            'period': event.get('period', ''),
+                            'elapsed': event.get('elapsed', ''),
+                            'finishedTimestamp': event.get('finishedTimestamp', ''),
+                            'startTime': event.get('startTime', ''),
+                        }
+
+                        # Log game metadata samples for data analysis
+                        # Log if: live game, ended game, or has score/period data
+                        if event.get('live') or event.get('ended') or event.get('score') or event.get('period'):
+                            logger.info(f"🎮 GAME METADATA DETECTED [{condition_id[:8]}...]")
+                            logger.info(f"   Market: {question[:80]}")
+                            logger.info(f"   Event data: {json.dumps(event, indent=2)}")
+
                     self.sports_markets[condition_id] = {
                         'condition_id': condition_id,
                         'question': question,
@@ -146,6 +168,7 @@ class MarketScanner:
                         'market_slug': market.get('market_slug', ''),
                         'category': market.get('category', ''),
                         'end_date': market.get('end_date_iso', ''),
+                        'game_metadata': game_metadata,  # Real-time game status!
                     }
 
                     self.market_questions[condition_id] = question
