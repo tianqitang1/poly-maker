@@ -23,14 +23,31 @@ logger = get_logger('spike_momentum.scanner')
 class MarketScanner:
     """Scans Polymarket for sports markets and monitors for spikes."""
 
+    # Sports-specific keywords (removed generic words like 'win', 'game', 'match')
     SPORTS_KEYWORDS = [
-        'nfl', 'nba', 'mlb', 'nhl', 'mls',
-        'premier league', 'champions league', 'world cup',
+        # Leagues
+        'nfl', 'nba', 'mlb', 'nhl', 'mls', 'ncaa', 'ncaaf', 'ncaab',
+        'premier league', 'champions league', 'uefa', 'world cup', 'la liga',
+        # Sports
         'football', 'basketball', 'baseball', 'hockey', 'soccer',
-        'game', 'match', 'win', 'score', 'playoff',
-        'lakers', 'warriors', 'chiefs', 'bills', 'cowboys',
-        'manchester', 'liverpool', 'barcelona', 'real madrid'
+        # Events
+        'playoff', 'super bowl', 'world series', 'stanley cup', 'finals',
+        'championship', 'tournament', 'bowl game',
+        # NFL Teams
+        'chiefs', 'bills', 'cowboys', 'patriots', '49ers', 'eagles', 'packers',
+        'ravens', 'dolphins', 'bengals', 'browns',
+        # NBA Teams
+        'lakers', 'warriors', 'celtics', 'heat', 'bucks', 'nuggets', 'suns',
+        'mavericks', 'clippers', 'knicks',
+        # Soccer Teams
+        'manchester', 'liverpool', 'barcelona', 'real madrid', 'chelsea',
+        'arsenal', 'bayern', 'psg',
+        # Player names (high-profile only)
+        'mahomes', 'lebron', 'curry', 'messi', 'ronaldo',
     ]
+
+    # Category-based filtering (more reliable)
+    SPORTS_CATEGORIES = ['sports', 'football', 'basketball', 'baseball', 'soccer', 'hockey']
 
     def __init__(
         self,
@@ -144,11 +161,19 @@ class MarketScanner:
         category = market.get('category', '').lower()
         tags = ' '.join(market.get('tags', [])).lower()
 
-        # Check if any sports keyword is in question, category, or tags
-        text_to_check = f"{question} {category} {tags}"
+        # First check category (most reliable)
+        if category in self.SPORTS_CATEGORIES:
+            return True
 
+        # Check tags for sports categories
+        for sports_cat in self.SPORTS_CATEGORIES:
+            if sports_cat in tags:
+                return True
+
+        # Check question for sports keywords
+        # Only check question (not category/tags again) to avoid false positives
         for keyword in self.SPORTS_KEYWORDS:
-            if keyword in text_to_check:
+            if keyword in question:
                 return True
 
         return False
