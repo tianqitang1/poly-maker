@@ -643,29 +643,32 @@ class MarketScanner:
         else:
             print(f"\nNo related news found")
 
-        # LLM analysis (if available)
-        if self.llm_analyzer and news_matches:
-            print(f"\nRunning LLM analysis...")
-            analysis = self.llm_analyzer.analyze_spike(
-                market_question=spike.market_question,
-                current_price=spike.current_price,
-                previous_price=spike.previous_price,
-                price_change_pct=spike.price_change_pct,
-                news_items=[m['news'] for m in news_matches]
-            )
+        # LLM analysis (if available) - runs even without news if we have game data
+        if self.llm_analyzer:
+            # Only run LLM if we have game metadata OR news
+            if game_metadata or news_matches:
+                print(f"\nRunning LLM analysis...")
+                analysis = self.llm_analyzer.analyze_spike(
+                    market_question=spike.market_question,
+                    current_price=spike.current_price,
+                    previous_price=spike.previous_price,
+                    price_change_pct=spike.price_change_pct,
+                    game_metadata=game_metadata,
+                    news_items=[m['news'] for m in news_matches] if news_matches else None
+                )
 
-            if analysis:
-                print(f"\n📊 LLM Analysis:")
-                print(f"  Justified: {'YES' if analysis.justified else 'NO'}")
-                print(f"  Confidence: {analysis.confidence}%")
-                print(f"  Recommendation: {analysis.recommendation.upper()}")
-                print(f"  Reasoning: {analysis.reasoning}")
+                if analysis:
+                    print(f"\n📊 LLM Analysis:")
+                    print(f"  Justified: {'YES' if analysis.justified else 'NO'}")
+                    print(f"  Confidence: {analysis.confidence}%")
+                    print(f"  Recommendation: {analysis.recommendation.upper()}")
+                    print(f"  Reasoning: {analysis.reasoning}")
 
-                if analysis.near_resolution:
-                    print(f"  ⏰ Near resolution: {analysis.estimated_time_to_resolution}")
+                    if analysis.near_resolution:
+                        print(f"  ⏰ Near resolution: {analysis.estimated_time_to_resolution}")
 
-                should_trade = self.llm_analyzer.should_trade(analysis)
-                print(f"\n  {'✅ WOULD TRADE' if should_trade else '❌ SKIP'} (in live mode)")
+                    should_trade = self.llm_analyzer.should_trade(analysis)
+                    print(f"\n  {'✅ WOULD TRADE' if should_trade else '❌ SKIP'} (in live mode)")
 
         print(f"{'='*120}\n")
 
