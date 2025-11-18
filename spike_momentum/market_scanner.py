@@ -173,6 +173,7 @@ class MarketScanner:
                         'market_slug': market.get('market_slug', ''),
                         'category': market.get('category', ''),
                         'end_date': market.get('end_date_iso', ''),
+                        'game_start_time': market.get('gameStartTime', ''),  # When game actually starts
                         'game_metadata': game_metadata,  # Real-time game status!
                     }
 
