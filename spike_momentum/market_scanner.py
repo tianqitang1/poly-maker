@@ -282,7 +282,7 @@ class MarketScanner:
         """
         Monitor markets via WebSocket and detect spikes.
 
-        This is the main monitoring loop.
+        This is the main monitoring loop with automatic reconnection.
         """
         logger.info("Starting market monitoring...")
 
@@ -306,40 +306,68 @@ class MarketScanner:
             print(f"  {i+1}. {info['question'][:80]}")
         print()
 
-        # Connect to WebSocket and process updates
+        # Reconnection loop with exponential backoff
+        reconnect_delay = 1  # Start with 1 second
+        max_reconnect_delay = 60  # Max 60 seconds
+
+        while True:
+            try:
+                await self._connect_and_monitor(token_ids)
+                # If we get here, connection closed gracefully - reset delay
+                reconnect_delay = 1
+
+            except Exception as e:
+                logger.error(f"WebSocket connection error: {e}")
+                logger.info(f"Reconnecting in {reconnect_delay} seconds...")
+                await asyncio.sleep(reconnect_delay)
+
+                # Exponential backoff
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
+    async def _connect_and_monitor(self, token_ids: List[str]):
+        """Connect to WebSocket and monitor until connection drops."""
+        import websockets
+        from websockets.exceptions import ConnectionClosed, WebSocketException
+
         uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-        try:
-            import websockets
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as websocket:
+            # Subscribe to markets
+            message = {"assets_ids": token_ids}
+            await websocket.send(json.dumps(message))
 
-            async with websockets.connect(uri, ping_interval=5, ping_timeout=None) as websocket:
-                # Subscribe to markets
-                message = {"assets_ids": token_ids}
-                await websocket.send(json.dumps(message))
+            logger.info(f"Subscribed to {len(token_ids)} token IDs")
+            print(f"✓ Connected to WebSocket\n")
+            print("Waiting for price spikes...\n")
 
-                logger.info(f"Subscribed to {len(token_ids)} token IDs")
-                print(f"✓ Connected to WebSocket\n")
-                print("Waiting for price spikes...\n")
+            # Process incoming messages
+            while True:
+                try:
+                    message = await websocket.recv()
+                    json_data = json.loads(message)
 
-                # Process incoming messages
-                while True:
-                    try:
-                        message = await websocket.recv()
-                        json_data = json.loads(message)
+                    # Process market updates
+                    if isinstance(json_data, dict):
+                        await self._process_market_update([json_data])
+                    elif isinstance(json_data, list):
+                        await self._process_market_update(json_data)
 
-                        # Process market updates
-                        if isinstance(json_data, dict):
-                            await self._process_market_update([json_data])
-                        elif isinstance(json_data, list):
-                            await self._process_market_update(json_data)
+                except (ConnectionClosed, WebSocketException) as e:
+                    # WebSocket connection lost - raise to trigger reconnection
+                    logger.warning(f"WebSocket connection closed: {e}")
+                    raise
 
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
+                except json.JSONDecodeError as e:
+                    # Invalid JSON - log and continue
+                    logger.warning(f"Invalid JSON received: {e}")
+                    continue
 
-        except Exception as e:
-            logger.error(f"WebSocket error: {e}")
-            import traceback
-            traceback.print_exc()
+                except Exception as e:
+                    # Other errors - log and continue
+                    logger.error(f"Error processing message: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
 
     async def _process_market_update(self, updates: List[Dict[str, Any]]):
         """Process market updates from WebSocket."""
