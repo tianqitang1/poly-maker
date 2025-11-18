@@ -318,13 +318,53 @@ next_news_api:
 
 ### Available Sources
 
+**API Aggregators:**
+
 | Source | API Key Required | Cost | Coverage |
 |--------|-----------------|------|----------|
-| **google** | ❌ No | Free | Global news |
+| **google** | ❌ No | Free | Global news via Google News |
 | newsapi | ✅ Yes | Free tier available | 80+ countries |
 | newsdata | ✅ Yes | Free tier available | 48+ countries |
 
-**Recommendation**: Start with Google News (free, no API key). Add other sources as needed.
+**Built-in RSS Feeds (30+ sources, all free!):**
+
+| Region | Source Code | Name |
+|--------|-------------|------|
+| **International** | `INTER-YN` | Yahoo News |
+| | `INTER-LH` | Life Hacker |
+| **United States** | `US-NYT` | New York Times |
+| | `US-CNNN` | CNN News |
+| | `US-HP` | Huffington Post |
+| | `US-FN` | Fox News |
+| | `US-R` | Reuters |
+| | `US-P` | Politico |
+| | `US-LAT` | Los Angeles Times |
+| **Australia** | `AU-SMHLN` | Sydney Morning Herald |
+| | `AU-ABCN` | ABC News |
+| | `AU-TALN` | The Age |
+| | `AU-PN` | PerthNow |
+| | `AU-BTLN` | Brisbane Times |
+| | `AU-IA` | Independent Australia |
+| | `AU-BNLH` | Business News |
+| | `AU-ID` | InDaily |
+| | `AU-C` | Crikey |
+| | `AU-MW` | Michael West |
+| **Canada** | `CA-CBCN` | CBC News |
+| | `CA-CTVN` | CTV News |
+| | `CA-FP` | Financial Post |
+| | `CA-NP` | National Post |
+| | `CA-OC` | Ottawa Citizen |
+| | `CA-TP` | The Province |
+| | `CA-TST` | Toronto Star |
+| | `CA-TSU` | Toronto Sun |
+| **Germany** | `DE-ZO` | ZEIT ONLINE |
+| | `DE-FO` | FOCUS Online |
+| | `DE-DW` | Deutsche Welle |
+
+**Recommendation**:
+- For US news: Use `google` + `US-NYT` + `US-CNNN` + `US-R`
+- For global coverage: Use `google` + `INTER-YN` + multiple regional sources
+- All RSS feeds are free and require no API keys!
 
 ### Features
 
@@ -346,9 +386,10 @@ next_news_api:
 - Deduplication with RSS sources
 - Compatible with semantic search
 
-### Example: Sports News with Next News API
+### Example: Multiple News Sources
 
 ```python
+# Example 1: Sports with multiple sources
 config = {
     'enabled': True,
     'categories': ['sports'],
@@ -357,7 +398,7 @@ config = {
         'next_news_api': {
             'enabled': True,
             'server_path': '~/next-news-api',
-            'sources': ['google'],
+            'sources': ['google', 'US-NYT', 'US-CNNN'],  # Mix API + RSS feeds
             'max_results_per_source': 10
         }
     }
@@ -365,12 +406,43 @@ config = {
 
 feed = NewsFeed(config)
 
-# Fetches from both ESPN RSS and Google News (via next-news-api)
+# Fetches from ESPN RSS, Google News, NYT, and CNN
 news = feed.fetch_news(category='sports', max_items=20)
 
-# Automatic deduplication combines unique items from both sources
+# Automatic deduplication combines unique items from all sources
 for item in news:
     print(f"[{item.source}] {item.title}")
+```
+
+```python
+# Example 2: Maximum coverage with 10+ sources
+config = {
+    'enabled': True,
+    'sources': {
+        'next_news_api': {
+            'enabled': True,
+            'server_path': '~/next-news-api',
+            'sources': [
+                # API aggregator
+                'google',
+                # Major US outlets
+                'US-NYT', 'US-CNNN', 'US-HP', 'US-R', 'US-P',
+                # International
+                'INTER-YN',
+                # Canada
+                'CA-CBCN',
+                # Germany
+                'DE-DW'
+            ],
+            'max_results_per_source': 5  # 5 per source = ~45 articles
+        }
+    }
+}
+
+feed = NewsFeed(config)
+news = feed.fetch_news(max_items=100)
+
+print(f"Fetched {len(news)} articles from {len(set(item.source for item in news))} sources")
 ```
 
 ---

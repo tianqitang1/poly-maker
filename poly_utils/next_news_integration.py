@@ -428,10 +428,56 @@ class NextNewsAPIManager:
         Get list of available news sources.
 
         Returns:
-            List of source names
+            List of source names (short codes)
         """
-        # Based on next-news-api documentation
-        return ['google', 'newsapi', 'newsdata']
+        # API aggregator sources
+        api_sources = ['google', 'newsapi', 'newsdata']
+
+        # Built-in RSS feed sources (from src/lib/news/constants.ts)
+        rss_sources = [
+            # International
+            'INTER-YN',    # Yahoo News
+            'INTER-LH',    # Life Hacker
+
+            # United States
+            'US-NYT',      # New York Times
+            'US-CNNN',     # CNN News
+            'US-HP',       # Huffington Post
+            'US-FN',       # Fox News
+            'US-R',        # Reuters
+            'US-P',        # Politico
+            'US-LAT',      # Los Angeles Times
+
+            # Australia
+            'AU-SMHLN',    # Sydney Morning Herald - Latest News
+            'AU-ABCN',     # ABC News
+            'AU-TALN',     # The Age - Latest News
+            'AU-PN',       # PerthNow
+            'AU-TCTLN',    # The Canberra Times - Local News
+            'AU-BTLN',     # Brisbane Times - Latest News
+            'AU-IA',       # Independent Australia
+            'AU-BNLH',     # Business News - Latest Headlines
+            'AU-ID',       # InDaily
+            'AU-C',        # Crikey
+            'AU-MW',       # Michael West
+
+            # Canada
+            'CA-CBCN',     # CBC News
+            'CA-CTVN',     # CTV News
+            'CA-FP',       # Financial Post
+            'CA-NP',       # National Post
+            'CA-OC',       # Ottawa Citizen
+            'CA-TP',       # The Province
+            'CA-TST',      # Toronto Star
+            'CA-TSU',      # Toronto Sun
+
+            # Germany
+            'DE-ZO',       # ZEIT ONLINE
+            'DE-FO',       # FOCUS Online
+            'DE-DW',       # Deutsche Welle
+        ]
+
+        return api_sources + rss_sources
 
     def get_status(self) -> Dict[str, Any]:
         """

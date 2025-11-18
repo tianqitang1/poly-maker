@@ -192,10 +192,35 @@ news:
       startup_timeout: 30          # Seconds to wait for server startup
 
       # News sources to use (can use multiple)
+      # API Aggregators (free, no API key for google)
       sources:
         - google                   # Google News (free, no API key)
         # - newsapi                # NewsAPI.org (requires API key)
         # - newsdata               # NewsData.io (requires API key)
+
+      # Built-in RSS Feeds (30+ sources, all free!)
+      # Uncomment any sources you want to use:
+      #   # International
+      #   - INTER-YN               # Yahoo News
+      #   - INTER-LH               # Life Hacker
+      #   # United States
+      #   - US-NYT                 # New York Times
+      #   - US-CNNN                # CNN News
+      #   - US-HP                  # Huffington Post
+      #   - US-FN                  # Fox News
+      #   - US-R                   # Reuters
+      #   - US-P                   # Politico
+      #   - US-LAT                 # Los Angeles Times
+      #   # Australia
+      #   - AU-SMHLN               # Sydney Morning Herald
+      #   - AU-ABCN                # ABC News
+      #   # Canada
+      #   - CA-CBCN                # CBC News
+      #   - CA-CTVN                # CTV News
+      #   # Germany
+      #   - DE-ZO                  # ZEIT ONLINE
+      #   - DE-DW                  # Deutsche Welle
+      #   # See poly_utils/next_news_integration.py for complete list
 
       # Optional query filter (e.g., "cryptocurrency", "NBA")
       # query: null
