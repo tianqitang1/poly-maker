@@ -406,26 +406,56 @@ class MarketScanner:
 
                 # Find markets that might be live (have game_start_time in the past)
                 now = datetime.utcnow()
-                live_candidates = []
+
+                # Build prioritized list of candidates
+                high_priority = []  # Games that started or were previously live
+                normal_priority = []  # Everything else
 
                 for condition_id, market_info in self.sports_markets.items():
                     # Skip if already ended
                     if market_info.get('game_metadata', {}).get('ended'):
                         continue
 
-                    # Check if game should be live or recently finished
-                    # (we check recently finished games too for final scores)
                     market_slug = market_info.get('market_slug')
-                    if market_slug:
-                        live_candidates.append((condition_id, market_slug))
+                    if not market_slug:
+                        continue
+
+                    # Check if game has started (using gameStartTime)
+                    game_start_time_str = market_info.get('game_start_time', '')
+                    is_high_priority = False
+
+                    if game_start_time_str:
+                        try:
+                            from dateutil import parser
+                            game_start_time = parser.parse(game_start_time_str).replace(tzinfo=None)
+                            time_since_start = (now - game_start_time).total_seconds()
+
+                            # Game started in the past - high priority!
+                            if time_since_start > 0:
+                                is_high_priority = True
+                        except Exception:
+                            pass
+
+                    # Also high priority if previously detected as live
+                    if market_info.get('game_metadata', {}).get('live'):
+                        is_high_priority = True
+
+                    if is_high_priority:
+                        high_priority.append((condition_id, market_slug))
+                    else:
+                        normal_priority.append((condition_id, market_slug))
+
+                # Combine: high priority first, then normal
+                live_candidates = high_priority + normal_priority
 
                 if not live_candidates:
                     logger.debug("No live game candidates found")
                     continue
 
                 # Fetch live status for up to 20 markets per iteration (rate limiting)
-                # Prioritize markets that were previously live
+                # High priority markets checked first
                 candidates_to_check = live_candidates[:20]
+                logger.debug(f"High priority candidates: {len(high_priority)}, Normal: {len(normal_priority)}")
                 logger.info(f"Checking {len(candidates_to_check)} markets for live game status (out of {len(live_candidates)} candidates)")
 
                 live_count = 0
