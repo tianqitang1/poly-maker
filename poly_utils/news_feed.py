@@ -38,6 +38,15 @@ from dataclasses import dataclass, field
 
 from poly_utils.logging_utils import get_logger
 
+# Optional semantic search support
+try:
+    from poly_utils.semantic_search import SemanticSearchEngine, SearchResult
+    SEMANTIC_SEARCH_AVAILABLE = True
+except ImportError:
+    SEMANTIC_SEARCH_AVAILABLE = False
+    SemanticSearchEngine = None
+    SearchResult = None
+
 logger = get_logger('poly_utils.news_feed')
 
 
@@ -141,8 +150,25 @@ class NewsFeed:
         # Category filter (if specified, only fetch these categories)
         self.categories = config.get('categories', ['sports', 'crypto', 'politics', 'general'])
 
+        # Initialize semantic search if enabled
+        self.semantic_search = None
+        semantic_config = config.get('semantic_search', {})
+        if semantic_config.get('enabled', False):
+            if SEMANTIC_SEARCH_AVAILABLE:
+                try:
+                    self.semantic_search = SemanticSearchEngine(semantic_config)
+                    logger.info("Semantic search enabled")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize semantic search: {e}")
+            else:
+                logger.warning(
+                    "Semantic search requested but dependencies not available. "
+                    "Install: pip install chromadb sentence-transformers"
+                )
+
         logger.info(
-            f"Initialized NewsFeed (enabled={self.enabled}, categories={self.categories})"
+            f"Initialized NewsFeed (enabled={self.enabled}, categories={self.categories}, "
+            f"semantic_search={self.semantic_search is not None})"
         )
 
     def fetch_news(
@@ -211,6 +237,13 @@ class NewsFeed:
         # Update cache
         self.news_cache = unique_items[:max_items]
         self.last_refresh = current_time
+
+        # Add to semantic search index if enabled
+        if self.semantic_search and unique_items:
+            try:
+                self.semantic_search.add_news(unique_items)
+            except Exception as e:
+                logger.warning(f"Failed to add news to semantic index: {e}")
 
         logger.info(
             f"Fetched {len(unique_items)} news items "
@@ -524,6 +557,91 @@ class NewsFeed:
 
         return results[:max_results]
 
+    def semantic_match_to_market(
+        self,
+        market_question: str,
+        market_id: Optional[str] = None,
+        category: Optional[str] = None,
+        max_results: int = 5,
+        min_similarity: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Find news items semantically similar to a market question using embeddings.
+
+        This method uses semantic search (ChromaDB + embeddings) to find relevant news
+        instead of simple keyword matching. Much more accurate than match_to_market().
+
+        Args:
+            market_question: The Polymarket question
+            market_id: Optional market ID (enables embedding caching)
+            category: Optional category filter (auto-detect if None)
+            max_results: Max news items to return
+            min_similarity: Minimum similarity threshold (0-1)
+
+        Returns:
+            List of dicts with news items and similarity scores
+            Format: [{'news': NewsItem, 'similarity_score': float, 'matched_keywords': []}]
+
+        Raises:
+            RuntimeError: If semantic search is not enabled/available
+        """
+        if not self.semantic_search:
+            raise RuntimeError(
+                "Semantic search not enabled. Enable in config with:\n"
+                "news:\n"
+                "  semantic_search:\n"
+                "    enabled: true\n"
+                "    provider: sentence_transformer"
+            )
+
+        # Cache market embedding if market_id provided
+        if market_id:
+            try:
+                self.semantic_search.cache_market(
+                    question=market_question,
+                    market_id=market_id,
+                    metadata={'category': category}
+                )
+            except Exception as e:
+                logger.debug(f"Failed to cache market embedding: {e}")
+
+        # Search semantically
+        try:
+            search_results = self.semantic_search.search_news(
+                query=market_question,
+                market_id=market_id,
+                max_results=max_results,
+                min_similarity=min_similarity
+            )
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}")
+            # Fall back to keyword matching
+            logger.info("Falling back to keyword matching")
+            return self.match_to_market(market_question, category, max_results)
+
+        # Convert SearchResult objects to match the format of match_to_market()
+        results = []
+        for result in search_results:
+            # Reconstruct NewsItem from metadata
+            news_item = NewsItem(
+                title=result.metadata['title'],
+                summary=result.metadata['summary'],
+                link=result.metadata['link'],
+                published=datetime.fromisoformat(result.metadata['published']),
+                source=result.metadata['source'],
+                category=result.metadata.get('category'),
+                subcategory=result.metadata.get('subcategory'),
+                tags=result.metadata.get('tags', [])
+            )
+
+            results.append({
+                'news': news_item,
+                'relevance_score': result.similarity_score,  # Using same key for compatibility
+                'matched_keywords': []  # Semantic search doesn't use keywords
+            })
+
+        return results
+
     def _detect_category(self, text: str) -> Optional[str]:
         """Auto-detect category from text."""
         text_lower = text.lower()
@@ -593,9 +711,42 @@ class NewsFeed:
         text = (item.title + ' ' + item.summary).lower()
         return [kw for kw in keywords if kw in text]
 
+    def cleanup_closed_markets(self, closed_market_ids: List[str]):
+        """
+        Remove closed markets from semantic search cache.
+
+        Args:
+            closed_market_ids: List of market IDs that have closed
+        """
+        if self.semantic_search:
+            try:
+                self.semantic_search.cleanup_closed_markets(closed_market_ids)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup closed markets: {e}")
+
+    def cleanup_old_markets(self, max_age_hours: int = 168):
+        """
+        Remove old markets from semantic search cache.
+
+        Args:
+            max_age_hours: Maximum age in hours (default: 7 days)
+        """
+        if self.semantic_search:
+            try:
+                self.semantic_search.cleanup_old_markets(max_age_hours)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup old markets: {e}")
+
     def clear_cache(self):
-        """Clear the news cache."""
+        """Clear the news cache and semantic search index."""
         self.news_cache = []
         self.seen_links = set()
         self.last_refresh = 0
+
+        if self.semantic_search:
+            try:
+                self.semantic_search.clear_news()
+            except Exception as e:
+                logger.warning(f"Failed to clear semantic search index: {e}")
+
         logger.info("Cleared news cache")

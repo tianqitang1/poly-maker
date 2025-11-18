@@ -6,6 +6,7 @@ This package provides generalized, reusable utilities for all trading bots in th
 
 - **LLM Client**: Unified interface for multiple LLM providers (Gemini, Claude, GPT, etc.)
 - **News Feed**: Multi-category news aggregator (sports, crypto, politics, general)
+- **Semantic Search**: ChromaDB-based semantic matching (much better than keyword matching!)
 - **Logging**: Structured logging system
 - **Proxy Config**: Proxy management
 - **Google Utils**: Google Sheets integration
@@ -208,6 +209,190 @@ data = item.to_dict()
 #   ...
 # }
 ```
+
+---
+
+## 🔍 Semantic Search (RECOMMENDED!)
+
+Semantic search uses embeddings to find relevant news instead of keyword matching. **This dramatically improves matching accuracy.**
+
+### Why Semantic Search?
+
+**Problem with keyword matching:**
+```
+Market: "Will Chet Holmgren win the 2025-2026 NBA Defensive Player of the Year?"
+
+Keyword matches:
+  ❌ "Players react to NFL's efforts to halt team report cards" (0.29)
+  ❌ "Kempe, Kings reach 8-year, $85M deal" (0.29)
+  ❌ "Grading bold season predictions for all 30 MLB teams" (0.09)
+
+All completely irrelevant!
+```
+
+**With semantic search:**
+```
+Market: "Will Chet Holmgren win the 2025-2026 NBA Defensive Player of the Year?"
+
+Semantic matches:
+  ✅ "Holmgren records 5 blocks in Thunder win over Mavs" (0.87)
+  ✅ "Thunder's defense dominates as Holmgren anchors paint" (0.82)
+  ✅ "OKC climbs to #1 defensive rating with Holmgren leading" (0.79)
+
+Highly relevant and actually useful!
+```
+
+### Installation
+
+```bash
+# Required dependencies
+pip install chromadb sentence-transformers
+
+# Optional cloud providers
+pip install openai cohere  # For OpenAI/Cohere embeddings
+```
+
+### Basic Usage
+
+```python
+from poly_utils import NewsFeed
+import yaml
+
+# Load config with semantic search enabled
+config = {
+    'enabled': True,
+    'categories': ['sports'],
+    'sources': {
+        'espn_rss': {'enabled': True, 'leagues': ['nfl', 'nba']}
+    },
+    'semantic_search': {
+        'enabled': True,
+        'provider': 'sentence_transformer',  # Local, free
+        'model': 'all-MiniLM-L6-v2',
+        'similarity_threshold': 0.5
+    }
+}
+
+feed = NewsFeed(config)
+
+# Fetch news (automatically indexed for semantic search)
+news = feed.fetch_news(category='sports')
+
+# Semantic matching (much better than keyword matching!)
+matches = feed.semantic_match_to_market(
+    market_question="Will Chet Holmgren win NBA DPOY?",
+    market_id="holmgren-dpoy-2026",  # Optional: enables caching
+    max_results=5,
+    min_similarity=0.6  # Override threshold
+)
+
+for match in matches:
+    news_item = match['news']
+    score = match['relevance_score']
+    print(f"[{score:.2f}] {news_item.title}")
+```
+
+### Embedding Providers
+
+| Provider | Model | Location | Cost | Quality | Speed |
+|----------|-------|----------|------|---------|-------|
+| **sentence_transformer** | all-MiniLM-L6-v2 | Local | Free | Good | Very Fast |
+| sentence_transformer | all-mpnet-base-v2 | Local | Free | Better | Fast |
+| **openai** | text-embedding-3-small | Cloud | $0.02/1M tokens | Excellent | Fast |
+| openai | text-embedding-3-large | Cloud | $0.13/1M tokens | Best | Fast |
+| cohere | embed-english-v3.0 | Cloud | $0.10/1M tokens | Excellent | Fast |
+| gemini | embedding-001 | Cloud | ~$0.00001/1K chars | Good | Fast |
+
+**Recommendation**: Use `sentence_transformer` (local, free) for most cases. Use cloud providers for higher accuracy on complex queries.
+
+### Market Embedding Cache
+
+Semantic search automatically caches market embeddings to avoid re-computing them:
+
+```python
+# Cache market embedding for faster repeat searches
+feed.semantic_match_to_market(
+    market_question="Will Bitcoin reach $100k?",
+    market_id="btc-100k",  # Cached for future queries
+)
+
+# Second query uses cached embedding (instant!)
+feed.semantic_match_to_market(
+    market_question="Will Bitcoin reach $100k?",
+    market_id="btc-100k",  # Retrieved from cache
+)
+```
+
+### Cleanup
+
+Automatically remove closed/old markets from cache:
+
+```python
+# Remove specific closed markets
+closed_ids = ["market-123", "market-456"]
+feed.cleanup_closed_markets(closed_ids)
+
+# Remove markets older than 7 days
+feed.cleanup_old_markets(max_age_hours=168)
+```
+
+### Configuration
+
+```yaml
+news:
+  semantic_search:
+    enabled: true
+    provider: "sentence_transformer"  # or openai, cohere, gemini
+    model: "all-MiniLM-L6-v2"
+    similarity_threshold: 0.5         # 0-1 (higher = more strict)
+    cache_markets: true                # Enable market caching
+    chroma_dir: ".cache/chromadb"      # Storage location
+```
+
+### Advanced Usage with Direct Access
+
+```python
+from poly_utils import SemanticSearchEngine
+
+# Direct access to semantic search engine
+config = {
+    'enabled': True,
+    'provider': 'sentence_transformer',
+    'model': 'all-MiniLM-L6-v2'
+}
+
+engine = SemanticSearchEngine(config)
+
+# Add news manually
+engine.add_news(news_items)
+
+# Search with custom parameters
+results = engine.search_news(
+    query="Will Lakers win tonight?",
+    market_id="lakers-game-123",
+    max_results=10,
+    min_similarity=0.7
+)
+
+# Get stats
+stats = engine.get_stats()
+print(f"Total embeddings: {stats['embedding_stats']['total_embeddings']}")
+print(f"Cached markets: {stats['cached_markets']}")
+```
+
+### Cost Comparison
+
+**Semantic search costs (per 1,000 news items):**
+
+| Provider | Cost | Notes |
+|----------|------|-------|
+| sentence_transformer | **$0** | Local, free, one-time download |
+| gemini | ~$0.01 | Very cheap |
+| openai (small) | ~$0.02 | Good quality/price ratio |
+| cohere | ~$0.10 | Optimized for search |
+| openai (large) | ~$0.13 | Highest quality |
+
+**Recommendation**: Start with local `sentence_transformer` (free). Upgrade to cloud only if accuracy isn't sufficient.
 
 ---
 
@@ -479,20 +664,25 @@ news:
 
 4. **Import and use**:
    ```python
-   from poly_utils import LLMClient, NewsFeed
+   from poly_utils import LLMClient, NewsFeed, SemanticSearchEngine
 
    llm = LLMClient(config['llm'])
    feed = NewsFeed(config['news'])
+
+   # Semantic search is automatically enabled if configured in config['news']['semantic_search']
+   # Or use directly:
+   # semantic_engine = SemanticSearchEngine(config['semantic_search'])
    ```
 
 ---
 
 ## 📚 See Also
 
-- **spike_momentum**: Full implementation using LLM + News for sports arbitrage
-- **config.example.yaml**: Complete configuration reference
+- **spike_momentum**: Full implementation using LLM + News + Semantic Search for sports arbitrage
+- **config.example.yaml**: Complete configuration reference including semantic search
 - **llm_client.py**: LLM client source code
 - **news_feed.py**: News feed source code
+- **semantic_search.py**: Semantic search engine source code
 
 ---
 
