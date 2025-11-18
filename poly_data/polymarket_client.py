@@ -194,6 +194,47 @@ class PolymarketClient:
             print(f"Error fetching order book for {market}: {e}")
             return pd.DataFrame(), pd.DataFrame()
 
+    def get_order_book_dict(self, market):
+        """
+        Get order book as simple dict structure compatible with strategies that
+        expect price/size lists instead of DataFrames.
+
+        Returns:
+            dict: {'bids': [{'price': float, 'size': float}, ...], 'asks': [...]}
+        """
+        try:
+            order_book = self.client.get_order_book(market)
+        except Exception as e:
+            print(f"Error fetching order book for {market}: {e}")
+            return {}
+
+        bids = getattr(order_book, 'bids', None) if not isinstance(order_book, dict) else order_book.get('bids', [])
+        asks = getattr(order_book, 'asks', None) if not isinstance(order_book, dict) else order_book.get('asks', [])
+
+        def _normalize(side):
+            normalized = []
+            if not side:
+                return normalized
+
+            for entry in side:
+                if isinstance(entry, dict):
+                    price = float(entry.get('price', 0))
+                    size = float(entry.get('size', entry.get('amount', 0)))
+                    normalized.append({'price': price, 'size': size})
+                elif hasattr(entry, 'price'):
+                    price = float(getattr(entry, 'price', 0))
+                    size = float(getattr(entry, 'size', getattr(entry, 'amount', 0)))
+                    normalized.append({'price': price, 'size': size})
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    # Assume [price, size, ...]
+                    normalized.append({'price': float(entry[0]), 'size': float(entry[1])})
+            return normalized
+
+        bids_norm = sorted(_normalize(bids), key=lambda x: x['price'], reverse=True)
+        asks_norm = sorted(_normalize(asks), key=lambda x: x['price'])
+
+        return {'bids': bids_norm, 'asks': asks_norm}
+
 
     def get_usdc_balance(self):
         """

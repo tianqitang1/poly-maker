@@ -232,15 +232,30 @@ class PostResolutionArbitrage:
             winning_token_id = yes_token if result.winner == 'yes' else no_token
 
             # Fetch order book for winning token
-            order_book = self.client.get_order_book(winning_token_id)
+            order_book = {}
+            try:
+                if hasattr(self.client, 'get_order_book_dict'):
+                    order_book = self.client.get_order_book_dict(winning_token_id)
+                else:
+                    order_book = self.client.get_order_book(winning_token_id)
+            except Exception as e:
+                logger.warning(f"Order book fetch failed for {winning_token_id}: {e}")
 
-            if not order_book or 'asks' not in order_book:
+            if not order_book:
                 logger.warning(f"Could not fetch order book for {winning_token_id}")
-                # Fall back to approximation
                 winning_token_price = current_price if result.winner == 'yes' else (1 - current_price)
             else:
-                # Get best ask (price we'd pay to buy)
-                asks = order_book.get('asks', [])
+                asks = order_book.get('asks', []) if isinstance(order_book, dict) else []
+
+                # If we got DataFrames (legacy), convert to lists
+                if not asks and not isinstance(order_book, dict):
+                    try:
+                        asks_df = order_book[1] if isinstance(order_book, tuple) else None
+                        if asks_df is not None and hasattr(asks_df, 'empty') and not asks_df.empty:
+                            asks = asks_df.to_dict('records')
+                    except Exception:
+                        asks = []
+
                 if not asks:
                     logger.warning(f"No asks available for {winning_token_id}")
                     return None  # Can't buy if no one is selling

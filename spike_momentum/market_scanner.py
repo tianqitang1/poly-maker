@@ -93,6 +93,7 @@ class MarketScanner:
         # Market data
         self.sports_markets = {}  # market_id -> market_info
         self.market_questions = {}  # market_id -> question text
+        self._live_poll_offset = 0  # round-robin cursor for live-game polling batches
 
         # Compile regex patterns once
         self.keyword_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.SPORTS_KEYWORDS]
@@ -143,6 +144,14 @@ class MarketScanner:
                     yes_token = tokens[0].get('token_id', '')
                     no_token = tokens[1].get('token_id', '')
 
+                    # Slug used for live-game polling endpoint; fall back through common keys
+                    market_slug = (
+                        market.get('market_slug')
+                        or market.get('slug')
+                        or market.get('ticker')
+                        or ''
+                    )
+
                     # Extract game metadata from events (real-time game status!)
                     events = market.get('events', [])
                     game_metadata = {}
@@ -170,7 +179,7 @@ class MarketScanner:
                         'question': question,
                         'yes_token': yes_token,
                         'no_token': no_token,
-                        'market_slug': market.get('market_slug', ''),
+                        'market_slug': market_slug,
                         'category': market.get('category', ''),
                         'end_date': market.get('end_date_iso', ''),
                         'game_start_time': market.get('gameStartTime', ''),  # When game actually starts
@@ -453,9 +462,33 @@ class MarketScanner:
                     continue
 
                 # Fetch live status for up to 20 markets per iteration (rate limiting)
-                # High priority markets checked first
-                candidates_to_check = live_candidates[:20]
-                logger.debug(f"High priority candidates: {len(high_priority)}, Normal: {len(normal_priority)}")
+                # High priority markets checked first, normal priority markets are
+                # round-robined so we don't starve markets beyond the first 20.
+                batch_size = 20
+                candidates_to_check = []
+
+                if high_priority:
+                    candidates_to_check.extend(high_priority[:batch_size])
+
+                remaining_slots = batch_size - len(candidates_to_check)
+
+                if remaining_slots > 0 and normal_priority:
+                    normal_count = len(normal_priority)
+                    start = self._live_poll_offset % normal_count
+
+                    normal_batch = normal_priority[start:start + remaining_slots]
+
+                    # If we hit the end of the list, wrap around to cover all markets
+                    if len(normal_batch) < remaining_slots and normal_count > len(normal_batch):
+                        wrap_count = remaining_slots - len(normal_batch)
+                        normal_batch.extend(normal_priority[:wrap_count])
+
+                    # Advance offset for next iteration (round-robin)
+                    self._live_poll_offset = (start + len(normal_batch)) % normal_count
+
+                    candidates_to_check.extend(normal_batch)
+
+                logger.debug(f"High priority candidates: {len(high_priority)}, Normal: {len(normal_priority)}, Offset: {self._live_poll_offset}")
                 logger.info(f"Checking {len(candidates_to_check)} markets for live game status (out of {len(live_candidates)} candidates)")
 
                 live_count = 0
@@ -495,13 +528,32 @@ class MarketScanner:
                                     no_token = market_info.get('no_token')
 
                                     if yes_token and no_token:
-                                        book = await self.client.get_order_book(yes_token)
+                                        book = {}
+                                        try:
+                                            if hasattr(self.client, 'get_order_book_dict'):
+                                                book = self.client.get_order_book_dict(yes_token)
+                                            else:
+                                                book = self.client.get_order_book(yes_token)
+                                        except Exception as e:
+                                            logger.warning(f"Order book fetch failed for {yes_token}: {e}")
 
-                                        if book and 'bids' in book and 'asks' in book:
-                                            best_bid = float(book['bids'][0]['price']) if book['bids'] else None
-                                            best_ask = float(book['asks'][0]['price']) if book['asks'] else None
+                                        bids = book.get('bids', []) if isinstance(book, dict) else []
+                                        asks = book.get('asks', []) if isinstance(book, dict) else []
 
-                                            if best_bid and best_ask:
+                                        # Legacy tuple/DataFrame support
+                                        if not bids and not asks and isinstance(book, tuple) and len(book) == 2:
+                                            bids_df, asks_df = book
+                                            try:
+                                                bids = bids_df.to_dict('records') if not bids_df.empty else []
+                                                asks = asks_df.to_dict('records') if not asks_df.empty else []
+                                            except Exception:
+                                                bids, asks = [], []
+
+                                        if bids and asks:
+                                            best_bid = float(bids[0]['price']) if bids else None
+                                            best_ask = float(asks[0]['price']) if asks else None
+
+                                            if best_bid is not None and best_ask is not None:
                                                 mid_price = (best_bid + best_ask) / 2
 
                                                 arb_opp = await self.post_res_arb.check_market_for_arb(
