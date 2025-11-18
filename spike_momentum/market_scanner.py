@@ -14,6 +14,7 @@ import re
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from datetime import datetime
+import aiohttp
 
 from poly_data.polymarket_client import PolymarketClient
 from spike_momentum.spike_detector import SpikeDetector, Spike
@@ -333,6 +334,110 @@ class MarketScanner:
         logger.info(f"Generated {len(token_ids)} token IDs to monitor")
         return token_ids
 
+    async def _fetch_live_game_status(self, market_slug: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch live game status from Gamma API for a specific market.
+
+        Args:
+            market_slug: The market slug identifier
+
+        Returns:
+            Game metadata dict with live, score, period, etc. or None if error
+        """
+        try:
+            url = f"https://gamma-api.polymarket.com/markets/slug/{market_slug}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status != 200:
+                        logger.debug(f"Failed to fetch {market_slug}: HTTP {response.status}")
+                        return None
+
+                    data = await response.json()
+
+                    # Extract events data (same structure as manual curl)
+                    events = data.get('events', [])
+                    if not events or len(events) == 0:
+                        return None
+
+                    event = events[0]
+                    game_metadata = {
+                        'live': event.get('live', False),
+                        'ended': event.get('ended', False),
+                        'score': event.get('score', ''),
+                        'period': event.get('period', ''),
+                        'elapsed': event.get('elapsed', ''),
+                        'startTime': event.get('startTime', ''),
+                        'finishedTimestamp': event.get('finishedTimestamp', ''),
+                    }
+
+                    return game_metadata
+
+        except asyncio.TimeoutError:
+            logger.debug(f"Timeout fetching live status for {market_slug}")
+            return None
+        except Exception as e:
+            logger.debug(f"Error fetching live status for {market_slug}: {e}")
+            return None
+
+    async def _update_live_games_loop(self):
+        """
+        Background task that periodically updates live game status for all markets.
+        Runs every 30 seconds to check for live games.
+        """
+        logger.info("Starting live game status updater...")
+
+        while True:
+            try:
+                # Wait 30 seconds between updates
+                await asyncio.sleep(30)
+
+                # Find markets that might be live (have game_start_time in the past)
+                now = datetime.utcnow()
+                live_candidates = []
+
+                for condition_id, market_info in self.sports_markets.items():
+                    # Skip if already ended
+                    if market_info.get('game_metadata', {}).get('ended'):
+                        continue
+
+                    # Check if game should be live or recently finished
+                    # (we check recently finished games too for final scores)
+                    market_slug = market_info.get('market_slug')
+                    if market_slug:
+                        live_candidates.append((condition_id, market_slug))
+
+                if not live_candidates:
+                    continue
+
+                # Fetch live status for up to 20 markets per iteration (rate limiting)
+                # Prioritize markets that were previously live
+                candidates_to_check = live_candidates[:20]
+
+                live_count = 0
+                for condition_id, market_slug in candidates_to_check:
+                    game_metadata = await self._fetch_live_game_status(market_slug)
+
+                    if game_metadata:
+                        # Update market metadata
+                        self.sports_markets[condition_id]['game_metadata'] = game_metadata
+
+                        if game_metadata.get('live'):
+                            live_count += 1
+                            logger.debug(
+                                f"Live game: {self.sports_markets[condition_id]['question'][:50]} - "
+                                f"Score: {game_metadata.get('score', 'N/A')}, "
+                                f"Period: {game_metadata.get('period', 'N/A')}"
+                            )
+
+                if live_count > 0:
+                    logger.info(f"Updated {live_count} live games")
+
+            except Exception as e:
+                logger.error(f"Error in live game updater: {e}")
+                import traceback
+                traceback.print_exc()
+
     async def monitor_markets(self):
         """
         Monitor markets via WebSocket and detect spikes.
@@ -360,6 +465,10 @@ class MarketScanner:
         for i, (cid, info) in enumerate(list(self.sports_markets.items())[:5]):
             print(f"  {i+1}. {info['question'][:80]}")
         print()
+
+        # Start background task for live game updates
+        live_game_task = asyncio.create_task(self._update_live_games_loop())
+        logger.info("Started live game status monitoring")
 
         # Reconnection loop with exponential backoff
         reconnect_delay = 1  # Start with 1 second
@@ -501,6 +610,26 @@ class MarketScanner:
         print(f"Price change: {spike.price_change_pct:+.2f}% ({spike.previous_price:.3f} → {spike.current_price:.3f})")
         print(f"Time window: {spike.time_window}s")
         print(f"Spike strength: {spike.spike_strength:.2f} std devs")
+
+        # Display live game status if available
+        market_info = self.sports_markets.get(spike.market_id)
+        if market_info:
+            game_metadata = market_info.get('game_metadata', {})
+            if game_metadata and (game_metadata.get('live') or game_metadata.get('score')):
+                print(f"\n🏟️  Live Game Status:")
+                if game_metadata.get('live'):
+                    print(f"  Status: 🔴 LIVE")
+                elif game_metadata.get('ended'):
+                    print(f"  Status: ✅ ENDED")
+                else:
+                    print(f"  Status: Pre-game")
+
+                if game_metadata.get('score'):
+                    print(f"  Score: {game_metadata['score']}")
+                if game_metadata.get('period'):
+                    print(f"  Period: {game_metadata['period']}")
+                if game_metadata.get('elapsed'):
+                    print(f"  Time: {game_metadata['elapsed']}")
 
         # Find relevant news
         news_matches = self.news_monitor.match_to_market(spike.market_question, max_results=3)
