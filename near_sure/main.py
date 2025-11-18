@@ -92,10 +92,20 @@ def trade_mode(dry_run: bool = False):
         print(f"\nTotal: {results['total']} | Success: {len(results['successful'])} | Failed: {len(results['failed'])}")
 
     except ValueError as e:
-        print(f"\n❌ Configuration Error: {e}")
-        print("\nPlease ensure you have set the following in your .env file:")
-        print("  NEAR_SURE_PK=<your_private_key>")
-        print("  NEAR_SURE_BROWSER_ADDRESS=<your_wallet_address>")
+        # Only show the env var hint for the explicit missing-env error that
+        # PolymarketClient raises. For any other ValueError, surface the real
+        # traceback so we can debug issues (e.g., interactive prompt errors)
+        # instead of mis-reporting them as missing env vars.
+        msg = str(e)
+        if "Missing environment variables" in msg:
+            print(f"\n❌ Configuration Error: {msg}")
+            print("\nPlease ensure you have set the following in your .env file:")
+            print("  NEAR_SURE_PK=<your_private_key>")
+            print("  NEAR_SURE_BROWSER_ADDRESS=<your_wallet_address>")
+        else:
+            import traceback
+            print("\n❌ Error (debug details below):")
+            traceback.print_exc()
         sys.exit(1)
 
     except Exception as e:
@@ -144,10 +154,16 @@ def monitor_mode(
         )
 
     except ValueError as e:
-        print(f"\n❌ Configuration Error: {e}")
-        print("\nPlease ensure you have set the following in your .env file:")
-        print("  NEAR_SURE_PK=<your_private_key>")
-        print("  NEAR_SURE_BROWSER_ADDRESS=<your_wallet_address>")
+        msg = str(e)
+        if "Missing environment variables" in msg:
+            print(f"\n❌ Configuration Error: {msg}")
+            print("\nPlease ensure you have set the following in your .env file:")
+            print("  NEAR_SURE_PK=<your_private_key>")
+            print("  NEAR_SURE_BROWSER_ADDRESS=<your_wallet_address>")
+        else:
+            import traceback
+            print("\n❌ Error (debug details below):")
+            traceback.print_exc()
         sys.exit(1)
 
     except KeyboardInterrupt:
