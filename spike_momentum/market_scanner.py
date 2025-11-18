@@ -213,11 +213,11 @@ class MarketScanner:
         """Fallback: fetch all markets and filter manually with proper pagination."""
         cursor = ""
         all_markets = []
-        iterations = 0
+        page = 0
         max_iterations = 50  # Safety limit to prevent infinite loops
 
         # Fetch ALL markets using pagination (like update_markets.py does)
-        while iterations < max_iterations:
+        while page < max_iterations:
             try:
                 response = self.client.client.get_sampling_markets(next_cursor=cursor)
                 markets_data = response.get('data', [])
@@ -226,27 +226,36 @@ class MarketScanner:
                     break
 
                 all_markets.extend(markets_data)
+                page += 1
+
+                # Progress logging (like near_sure does)
+                logger.info(f"Fetched page {page}: {len(markets_data)} markets (Total: {len(all_markets)})")
 
                 cursor = response.get('next_cursor')
                 if cursor is None:
+                    logger.info(f"Pagination complete: {page} pages fetched")
                     break
-
-                iterations += 1
 
             except Exception as e:
                 # API sometimes fails with bad cursor after exhausting markets
                 # This is expected behavior at the end of pagination
-                logger.debug(f"Pagination ended (fetched {len(all_markets)} markets): {e}")
+                logger.info(f"Pagination ended after {page} pages (fetched {len(all_markets)} markets): {e}")
                 break
 
-        logger.info(f"Fetched {len(all_markets)} total markets")
+        logger.info(f"Fetched {len(all_markets)} total markets, now filtering for sports...")
 
         # Filter for sports markets (moneyline only)
         sports_markets = []
         moneyline_count = 0
         filtered_count = 0
 
+        # Progress tracking for filtering (show every 500 markets)
+        processed = 0
         for market in all_markets:
+            processed += 1
+            if processed % 500 == 0:
+                logger.info(f"Filtering progress: {processed}/{len(all_markets)} markets checked...")
+
             # Check for sportsMarketType at market level (not in events!)
             sports_type = market.get('sportsMarketType')
             if sports_type:
@@ -280,41 +289,29 @@ class MarketScanner:
 
         if sports_market_type:
             # Only trade moneyline markets (most straightforward)
-            if sports_market_type.lower() == 'moneyline':
-                logger.debug(f"Found moneyline sports market: {market.get('question', '')[:50]}...")
-                return True
-            else:
-                # Skip spreads, over/under, parlays, etc.
-                logger.debug(f"Skipping non-moneyline sports market ({sports_market_type}): {market.get('question', '')[:50]}...")
-                return False
+            # Skip debug logging to speed up filtering (called ~3000 times)
+            return sports_market_type.lower() == 'moneyline'
 
         # FALLBACK: Use keyword-based detection if sportsMarketType not available
         question = market.get('question', '').lower()
         category = market.get('category', '').lower()
         tags = market.get('tags', [])
 
+        # Early check: avoid spread/over-under markets
+        spread_keywords = ['spread', 'over ', 'under ', 'o/u', 'total points']
+        is_spread_market = any(keyword in question for keyword in spread_keywords)
+
         # Check category (most reliable fallback)
         if category in self.SPORTS_CATEGORIES:
-            # Additional check: avoid spread/over-under markets in keywords
-            if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
-                logger.debug(f"Skipping spread/total market: {market.get('question', '')[:50]}...")
-                return False
-            return True
+            return not is_spread_market
 
         # Check tags
-        if tags:
-            for tag in tags:
-                if tag.lower() in self.SPORTS_TAGS:
-                    if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
-                        return False
-                    return True
+        if tags and any(tag.lower() in self.SPORTS_TAGS for tag in tags):
+            return not is_spread_market
 
         # Check question with word boundary patterns
-        for pattern in self.keyword_patterns:
-            if pattern.search(question):
-                if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
-                    return False
-                return True
+        if any(pattern.search(question) for pattern in self.keyword_patterns):
+            return not is_spread_market
 
         return False
 
