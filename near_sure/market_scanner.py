@@ -37,25 +37,44 @@ class NearSureMarketScanner:
         """
         cursor = ""
         all_markets = []
+        page = 0
 
         while True:
             try:
                 markets = self.client.client.get_sampling_markets(next_cursor=cursor)
-                markets_df = pd.DataFrame(markets['data'])
-                cursor = markets['next_cursor']
-                all_markets.append(markets_df)
 
-                if cursor is None:
+                # Validate response structure
+                if not isinstance(markets, dict) or 'data' not in markets:
+                    print(f"Invalid response structure on page {page + 1}")
                     break
+
+                markets_df = pd.DataFrame(markets['data'])
+
+                if not markets_df.empty:
+                    all_markets.append(markets_df)
+                    page += 1
+                    print(f"Fetched page {page}: {len(markets_df)} markets (Total: {sum(len(m) for m in all_markets)})")
+
+                # Check for next cursor
+                cursor = markets.get('next_cursor')
+                if cursor is None:
+                    print(f"Pagination complete: {page} pages fetched")
+                    break
+
             except Exception as e:
-                print(f"Error fetching markets: {e}")
-                break
+                # Handle end-of-pagination errors gracefully
+                error_str = str(e)
+                if ('400' in error_str or 'next item should be greater than or equal to 0' in error_str):
+                    print(f"Pagination complete: {page} pages fetched (reached end of available markets)")
+                    break
+                else:
+                    print(f"Error fetching markets on page {page + 1}: {e}")
+                    break
 
         if not all_markets:
             return pd.DataFrame()
 
-        all_df = pd.concat(all_markets)
-        all_df = all_df.reset_index(drop=True)
+        all_df = pd.concat(all_markets, ignore_index=True)
         return all_df
 
     def enrich_market_data(self, row) -> Optional[Dict]:
@@ -76,9 +95,19 @@ class NearSureMarketScanner:
             ret['condition_id'] = row['condition_id']
             ret['end_date_iso'] = row['end_date_iso']
 
-            # Parse closing time
+            # Parse closing time - handle None and timezone issues
+            if row['end_date_iso'] is None:
+                return None
+
             ret['end_date'] = pd.to_datetime(row['end_date_iso'])
-            ret['hours_until_close'] = (ret['end_date'] - datetime.now()).total_seconds() / 3600
+
+            # Convert to timezone-naive UTC for comparison
+            if ret['end_date'].tzinfo is not None:
+                ret['end_date'] = ret['end_date'].tz_convert('UTC').tz_localize(None)
+
+            # Use timezone-naive datetime for comparison
+            now = datetime.utcnow()
+            ret['hours_until_close'] = (ret['end_date'] - now).total_seconds() / 3600
 
             # Get token information
             if 'tokens' not in row or len(row['tokens']) < 2:
@@ -90,7 +119,11 @@ class NearSureMarketScanner:
             ret['answer2'] = row['tokens'][1]['outcome']
 
             # Get order book for token1
-            bids_df, asks_df = self.client.get_order_book(ret['token1'])
+            try:
+                bids_df, asks_df = self.client.get_order_book(ret['token1'])
+            except (ValueError, TypeError) as e:
+                print(f"Error unpacking order book for {ret['token1']}: {e}")
+                return None
 
             if bids_df.empty or asks_df.empty:
                 return None
@@ -150,17 +183,58 @@ class NearSureMarketScanner:
             return pd.DataFrame()
 
         print(f"Found {len(all_markets)} total markets")
-        print("Enriching market data...")
+
+        # Pre-filter by time BEFORE enriching (to avoid unnecessary order book fetches)
+        print("Pre-filtering by closing time...")
+        time_filtered = []
+        now = datetime.utcnow()
+
+        for idx, row in all_markets.iterrows():
+            # Skip markets with no end date
+            if row.get('end_date_iso') is None:
+                continue
+
+            try:
+                end_date = pd.to_datetime(row['end_date_iso'])
+
+                # Convert to timezone-naive UTC for comparison
+                if end_date.tzinfo is not None:
+                    end_date = end_date.tz_convert('UTC').tz_localize(None)
+
+                hours_until_close = (end_date - now).total_seconds() / 3600
+
+                # Apply time filters
+                if hours_until_close < min_hours_until_close:
+                    continue
+                if max_hours_until_close and hours_until_close > max_hours_until_close:
+                    continue
+
+                # Skip markets with insufficient token data
+                if 'tokens' not in row or len(row['tokens']) < 2:
+                    continue
+
+                time_filtered.append(row)
+
+            except Exception:
+                continue
+
+        print(f"After time filtering: {len(time_filtered)} markets (reduced from {len(all_markets)})")
+
+        if not time_filtered:
+            print("No markets pass time filter")
+            return pd.DataFrame()
+
+        print("Enriching market data with order books...")
 
         enriched_markets = []
-        for idx, row in all_markets.iterrows():
+        for idx, row in enumerate(time_filtered):
             enriched = self.enrich_market_data(row)
             if enriched:
                 enriched_markets.append(enriched)
 
             # Progress indicator
             if (idx + 1) % 50 == 0:
-                print(f"Processed {idx + 1}/{len(all_markets)} markets...")
+                print(f"Processed {idx + 1}/{len(time_filtered)} markets...")
 
         if not enriched_markets:
             print("No markets could be enriched")
@@ -206,6 +280,7 @@ class NearSureMarketScanner:
 
         close_time = market['end_date'].strftime('%m/%d %H:%M')
         hours = market['hours_until_close']
+        min_size = market.get('min_size', 10)
 
         # Determine which side is near-sure
         if market['midpoint'] >= 0.85:
@@ -219,5 +294,6 @@ class NearSureMarketScanner:
             f"{question:60s} | "
             f"{side:3s} @ {price:.3f} | "
             f"Close: {close_time} ({hours:.1f}h) | "
-            f"Spread: {market['spread']:.3f}"
+            f"Spread: {market['spread']:.3f} | "
+            f"Min: ${min_size:.0f}"
         )

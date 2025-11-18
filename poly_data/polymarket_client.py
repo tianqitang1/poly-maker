@@ -167,15 +167,32 @@ class PolymarketClient:
     def get_order_book(self, market):
         """
         Get the current order book for a specific market.
-        
+
         Args:
             market (str): Market ID to query
-            
+
         Returns:
             tuple: (bids_df, asks_df) - DataFrames containing bid and ask orders
         """
-        orderBook = self.client.get_order_book(market)
-        return pd.DataFrame(orderBook.bids).astype(float), pd.DataFrame(orderBook.asks).astype(float)
+        try:
+            orderBook = self.client.get_order_book(market)
+
+            # Validate order book structure
+            if not hasattr(orderBook, 'bids') or not hasattr(orderBook, 'asks'):
+                print(f"Warning: Order book for {market} missing bids or asks")
+                return pd.DataFrame(), pd.DataFrame()
+
+            bids = orderBook.bids if orderBook.bids is not None else []
+            asks = orderBook.asks if orderBook.asks is not None else []
+
+            bids_df = pd.DataFrame(bids).astype(float) if bids else pd.DataFrame()
+            asks_df = pd.DataFrame(asks).astype(float) if asks else pd.DataFrame()
+
+            return bids_df, asks_df
+
+        except Exception as e:
+            print(f"Error fetching order book for {market}: {e}")
+            return pd.DataFrame(), pd.DataFrame()
 
 
     def get_usdc_balance(self):

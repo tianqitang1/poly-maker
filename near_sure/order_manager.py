@@ -46,7 +46,14 @@ class NearSureOrderManager:
         """
         try:
             bids_df, asks_df = self.client.get_order_book(token_id)
+        except (ValueError, TypeError) as e:
+            print(f"Error getting order book for {token_id}: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error getting order book for {token_id}: {e}")
+            return None
 
+        try:
             if bids_df.empty or asks_df.empty:
                 print(f"Empty order book for token {token_id}")
                 return None
