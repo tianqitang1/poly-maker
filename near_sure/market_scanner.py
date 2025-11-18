@@ -280,6 +280,7 @@ class NearSureMarketScanner:
 
         close_time = market['end_date'].strftime('%m/%d %H:%M')
         hours = market['hours_until_close']
+        min_size = market.get('min_size', 10)
 
         # Determine which side is near-sure
         if market['midpoint'] >= 0.85:
@@ -293,5 +294,6 @@ class NearSureMarketScanner:
             f"{question:60s} | "
             f"{side:3s} @ {price:.3f} | "
             f"Close: {close_time} ({hours:.1f}h) | "
-            f"Spread: {market['spread']:.3f}"
+            f"Spread: {market['spread']:.3f} | "
+            f"Min: ${min_size:.0f}"
         )
