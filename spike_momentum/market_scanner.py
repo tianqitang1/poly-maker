@@ -14,6 +14,7 @@ import re
 from typing import Dict, List, Any, Optional
 import pandas as pd
 from datetime import datetime
+import aiohttp
 
 from poly_data.polymarket_client import PolymarketClient
 from spike_momentum.spike_detector import SpikeDetector, Spike
@@ -92,6 +93,7 @@ class MarketScanner:
         # Market data
         self.sports_markets = {}  # market_id -> market_info
         self.market_questions = {}  # market_id -> question text
+        self._live_poll_offset = 0  # round-robin cursor for live-game polling batches
 
         # Compile regex patterns once
         self.keyword_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.SPORTS_KEYWORDS]
@@ -142,6 +144,14 @@ class MarketScanner:
                     yes_token = tokens[0].get('token_id', '')
                     no_token = tokens[1].get('token_id', '')
 
+                    # Slug used for live-game polling endpoint; fall back through common keys
+                    market_slug = (
+                        market.get('market_slug')
+                        or market.get('slug')
+                        or market.get('ticker')
+                        or ''
+                    )
+
                     # Extract game metadata from events (real-time game status!)
                     events = market.get('events', [])
                     game_metadata = {}
@@ -169,9 +179,10 @@ class MarketScanner:
                         'question': question,
                         'yes_token': yes_token,
                         'no_token': no_token,
-                        'market_slug': market.get('market_slug', ''),
+                        'market_slug': market_slug,
                         'category': market.get('category', ''),
                         'end_date': market.get('end_date_iso', ''),
+                        'game_start_time': market.get('gameStartTime', ''),  # When game actually starts
                         'game_metadata': game_metadata,  # Real-time game status!
                     }
 
@@ -212,11 +223,11 @@ class MarketScanner:
         """Fallback: fetch all markets and filter manually with proper pagination."""
         cursor = ""
         all_markets = []
-        iterations = 0
+        page = 0
         max_iterations = 50  # Safety limit to prevent infinite loops
 
         # Fetch ALL markets using pagination (like update_markets.py does)
-        while iterations < max_iterations:
+        while page < max_iterations:
             try:
                 response = self.client.client.get_sampling_markets(next_cursor=cursor)
                 markets_data = response.get('data', [])
@@ -225,27 +236,36 @@ class MarketScanner:
                     break
 
                 all_markets.extend(markets_data)
+                page += 1
+
+                # Progress logging (like near_sure does)
+                logger.info(f"Fetched page {page}: {len(markets_data)} markets (Total: {len(all_markets)})")
 
                 cursor = response.get('next_cursor')
                 if cursor is None:
+                    logger.info(f"Pagination complete: {page} pages fetched")
                     break
-
-                iterations += 1
 
             except Exception as e:
                 # API sometimes fails with bad cursor after exhausting markets
                 # This is expected behavior at the end of pagination
-                logger.debug(f"Pagination ended (fetched {len(all_markets)} markets): {e}")
+                logger.info(f"Pagination ended after {page} pages (fetched {len(all_markets)} markets): {e}")
                 break
 
-        logger.info(f"Fetched {len(all_markets)} total markets")
+        logger.info(f"Fetched {len(all_markets)} total markets, now filtering for sports...")
 
         # Filter for sports markets (moneyline only)
         sports_markets = []
         moneyline_count = 0
         filtered_count = 0
 
+        # Progress tracking for filtering (show every 500 markets)
+        processed = 0
         for market in all_markets:
+            processed += 1
+            if processed % 500 == 0:
+                logger.info(f"Filtering progress: {processed}/{len(all_markets)} markets checked...")
+
             # Check for sportsMarketType at market level (not in events!)
             sports_type = market.get('sportsMarketType')
             if sports_type:
@@ -279,41 +299,29 @@ class MarketScanner:
 
         if sports_market_type:
             # Only trade moneyline markets (most straightforward)
-            if sports_market_type.lower() == 'moneyline':
-                logger.debug(f"Found moneyline sports market: {market.get('question', '')[:50]}...")
-                return True
-            else:
-                # Skip spreads, over/under, parlays, etc.
-                logger.debug(f"Skipping non-moneyline sports market ({sports_market_type}): {market.get('question', '')[:50]}...")
-                return False
+            # Skip debug logging to speed up filtering (called ~3000 times)
+            return sports_market_type.lower() == 'moneyline'
 
         # FALLBACK: Use keyword-based detection if sportsMarketType not available
         question = market.get('question', '').lower()
         category = market.get('category', '').lower()
         tags = market.get('tags', [])
 
+        # Early check: avoid spread/over-under markets
+        spread_keywords = ['spread', 'over ', 'under ', 'o/u', 'total points']
+        is_spread_market = any(keyword in question for keyword in spread_keywords)
+
         # Check category (most reliable fallback)
         if category in self.SPORTS_CATEGORIES:
-            # Additional check: avoid spread/over-under markets in keywords
-            if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
-                logger.debug(f"Skipping spread/total market: {market.get('question', '')[:50]}...")
-                return False
-            return True
+            return not is_spread_market
 
         # Check tags
-        if tags:
-            for tag in tags:
-                if tag.lower() in self.SPORTS_TAGS:
-                    if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
-                        return False
-                    return True
+        if tags and any(tag.lower() in self.SPORTS_TAGS for tag in tags):
+            return not is_spread_market
 
         # Check question with word boundary patterns
-        for pattern in self.keyword_patterns:
-            if pattern.search(question):
-                if any(keyword in question for keyword in ['spread', 'over ', 'under ', 'o/u', 'total points']):
-                    return False
-                return True
+        if any(pattern.search(question) for pattern in self.keyword_patterns):
+            return not is_spread_market
 
         return False
 
@@ -333,11 +341,248 @@ class MarketScanner:
         logger.info(f"Generated {len(token_ids)} token IDs to monitor")
         return token_ids
 
+    async def _fetch_live_game_status(self, market_slug: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch live game status from Gamma API for a specific market.
+
+        Args:
+            market_slug: The market slug identifier
+
+        Returns:
+            Game metadata dict with live, score, period, etc. or None if error
+        """
+        try:
+            url = f"https://gamma-api.polymarket.com/markets/slug/{market_slug}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status != 200:
+                        logger.debug(f"Failed to fetch {market_slug}: HTTP {response.status}")
+                        return None
+
+                    data = await response.json()
+
+                    # Extract events data (same structure as manual curl)
+                    events = data.get('events', [])
+                    if not events or len(events) == 0:
+                        logger.debug(f"No events array for {market_slug}")
+                        # Return empty metadata to indicate "not a live game market"
+                        return {
+                            'live': False,
+                            'ended': False,
+                            'score': '',
+                            'period': '',
+                            'elapsed': '',
+                            'startTime': '',
+                            'finishedTimestamp': '',
+                        }
+
+                    event = events[0]
+                    game_metadata = {
+                        'live': event.get('live', False),
+                        'ended': event.get('ended', False),
+                        'score': event.get('score', ''),
+                        'period': event.get('period', ''),
+                        'elapsed': event.get('elapsed', ''),
+                        'startTime': event.get('startTime', ''),
+                        'finishedTimestamp': event.get('finishedTimestamp', ''),
+                    }
+
+                    # Log if we found a live or ended game
+                    if game_metadata.get('live') or game_metadata.get('ended'):
+                        logger.info(f"Found {'LIVE' if game_metadata.get('live') else 'ENDED'} game: {market_slug}")
+
+                    return game_metadata
+
+        except asyncio.TimeoutError:
+            logger.debug(f"Timeout fetching live status for {market_slug}")
+            return None
+        except Exception as e:
+            logger.debug(f"Error fetching live status for {market_slug}: {e}")
+            return None
+
+    async def _update_live_games_loop(self):
+        """
+        Background task that periodically updates live game status for all markets.
+        Runs every 30 seconds to check for live games.
+        """
+        logger.info("Starting live game status updater...")
+
+        while True:
+            try:
+                # Wait 30 seconds between updates
+                await asyncio.sleep(30)
+
+                # Find markets that might be live (have game_start_time in the past)
+                now = datetime.utcnow()
+
+                # Build prioritized list of candidates
+                high_priority = []  # Games that started or were previously live
+                normal_priority = []  # Everything else
+
+                for condition_id, market_info in self.sports_markets.items():
+                    # Skip if already ended
+                    if market_info.get('game_metadata', {}).get('ended'):
+                        continue
+
+                    market_slug = market_info.get('market_slug')
+                    if not market_slug:
+                        continue
+
+                    # Check if game has started (using gameStartTime)
+                    game_start_time_str = market_info.get('game_start_time', '')
+                    is_high_priority = False
+
+                    if game_start_time_str:
+                        try:
+                            from dateutil import parser
+                            game_start_time = parser.parse(game_start_time_str).replace(tzinfo=None)
+                            time_since_start = (now - game_start_time).total_seconds()
+
+                            # Game started in the past - high priority!
+                            if time_since_start > 0:
+                                is_high_priority = True
+                        except Exception:
+                            pass
+
+                    # Also high priority if previously detected as live
+                    if market_info.get('game_metadata', {}).get('live'):
+                        is_high_priority = True
+
+                    if is_high_priority:
+                        high_priority.append((condition_id, market_slug))
+                    else:
+                        normal_priority.append((condition_id, market_slug))
+
+                # Combine: high priority first, then normal
+                live_candidates = high_priority + normal_priority
+
+                if not live_candidates:
+                    logger.debug("No live game candidates found")
+                    continue
+
+                # Fetch live status for up to 20 markets per iteration (rate limiting)
+                # High priority markets checked first, normal priority markets are
+                # round-robined so we don't starve markets beyond the first 20.
+                batch_size = 20
+                candidates_to_check = []
+
+                if high_priority:
+                    candidates_to_check.extend(high_priority[:batch_size])
+
+                remaining_slots = batch_size - len(candidates_to_check)
+
+                if remaining_slots > 0 and normal_priority:
+                    normal_count = len(normal_priority)
+                    start = self._live_poll_offset % normal_count
+
+                    normal_batch = normal_priority[start:start + remaining_slots]
+
+                    # If we hit the end of the list, wrap around to cover all markets
+                    if len(normal_batch) < remaining_slots and normal_count > len(normal_batch):
+                        wrap_count = remaining_slots - len(normal_batch)
+                        normal_batch.extend(normal_priority[:wrap_count])
+
+                    # Advance offset for next iteration (round-robin)
+                    self._live_poll_offset = (start + len(normal_batch)) % normal_count
+
+                    candidates_to_check.extend(normal_batch)
+
+                logger.debug(f"High priority candidates: {len(high_priority)}, Normal: {len(normal_priority)}, Offset: {self._live_poll_offset}")
+                logger.info(f"Checking {len(candidates_to_check)} markets for live game status (out of {len(live_candidates)} candidates)")
+
+                live_count = 0
+                ended_count = 0
+                checked_count = 0
+
+                for condition_id, market_slug in candidates_to_check:
+                    checked_count += 1
+                    game_metadata = await self._fetch_live_game_status(market_slug)
+
+                    if game_metadata:
+                        # Update market metadata
+                        self.sports_markets[condition_id]['game_metadata'] = game_metadata
+
+                        if game_metadata.get('live'):
+                            live_count += 1
+                            logger.debug(
+                                f"Live game: {self.sports_markets[condition_id]['question'][:50]} - "
+                                f"Score: {game_metadata.get('score', 'N/A')}, "
+                                f"Period: {game_metadata.get('period', 'N/A')}"
+                            )
+
+                        if game_metadata.get('ended'):
+                            ended_count += 1
+                            logger.info(
+                                f"🏁 Game ended: {self.sports_markets[condition_id]['question'][:50]} - "
+                                f"Final score: {game_metadata.get('score', 'N/A')}"
+                            )
+
+                        # Check for post-resolution arb on live or ended games
+                        if (game_metadata.get('live') or game_metadata.get('ended')) and self.post_res_arb:
+                            if self.post_res_arb.enabled:
+                                # Fetch current order book to get price
+                                try:
+                                    market_info = self.sports_markets[condition_id]
+                                    yes_token = market_info.get('yes_token')
+                                    no_token = market_info.get('no_token')
+
+                                    if yes_token and no_token:
+                                        book = {}
+                                        try:
+                                            if hasattr(self.client, 'get_order_book_dict'):
+                                                book = self.client.get_order_book_dict(yes_token)
+                                            else:
+                                                book = self.client.get_order_book(yes_token)
+                                        except Exception as e:
+                                            logger.warning(f"Order book fetch failed for {yes_token}: {e}")
+
+                                        bids = book.get('bids', []) if isinstance(book, dict) else []
+                                        asks = book.get('asks', []) if isinstance(book, dict) else []
+
+                                        # Legacy tuple/DataFrame support
+                                        if not bids and not asks and isinstance(book, tuple) and len(book) == 2:
+                                            bids_df, asks_df = book
+                                            try:
+                                                bids = bids_df.to_dict('records') if not bids_df.empty else []
+                                                asks = asks_df.to_dict('records') if not asks_df.empty else []
+                                            except Exception:
+                                                bids, asks = [], []
+
+                                        if bids and asks:
+                                            best_bid = float(bids[0]['price']) if bids else None
+                                            best_ask = float(asks[0]['price']) if asks else None
+
+                                            if best_bid is not None and best_ask is not None:
+                                                mid_price = (best_bid + best_ask) / 2
+
+                                                arb_opp = await self.post_res_arb.check_market_for_arb(
+                                                    market_id=condition_id,
+                                                    market_question=market_info['question'],
+                                                    current_price=mid_price,
+                                                    market_info=market_info
+                                                )
+
+                                                if arb_opp:
+                                                    await self._handle_post_res_arb(arb_opp)
+                                except Exception as e:
+                                    logger.error(f"Error checking post-res arb for {condition_id[:8]}...: {e}")
+
+                logger.info(f"Live game polling: checked {checked_count} markets, found {live_count} live, {ended_count} ended")
+
+                if live_count == 0 and ended_count == 0 and checked_count > 0:
+                    logger.debug(f"No live or ended games found in {checked_count} markets checked")
+
+            except Exception as e:
+                logger.error(f"Error in live game updater: {e}")
+                import traceback
+                traceback.print_exc()
+
     async def monitor_markets(self):
         """
         Monitor markets via WebSocket and detect spikes.
 
-        This is the main monitoring loop.
+        This is the main monitoring loop with automatic reconnection.
         """
         logger.info("Starting market monitoring...")
 
@@ -361,40 +606,72 @@ class MarketScanner:
             print(f"  {i+1}. {info['question'][:80]}")
         print()
 
-        # Connect to WebSocket and process updates
+        # Start background task for live game updates
+        live_game_task = asyncio.create_task(self._update_live_games_loop())
+        logger.info("Started live game status monitoring")
+
+        # Reconnection loop with exponential backoff
+        reconnect_delay = 1  # Start with 1 second
+        max_reconnect_delay = 60  # Max 60 seconds
+
+        while True:
+            try:
+                await self._connect_and_monitor(token_ids)
+                # If we get here, connection closed gracefully - reset delay
+                reconnect_delay = 1
+
+            except Exception as e:
+                logger.error(f"WebSocket connection error: {e}")
+                logger.info(f"Reconnecting in {reconnect_delay} seconds...")
+                await asyncio.sleep(reconnect_delay)
+
+                # Exponential backoff
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
+    async def _connect_and_monitor(self, token_ids: List[str]):
+        """Connect to WebSocket and monitor until connection drops."""
+        import websockets
+        from websockets.exceptions import ConnectionClosed, WebSocketException
+
         uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-        try:
-            import websockets
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as websocket:
+            # Subscribe to markets
+            message = {"assets_ids": token_ids}
+            await websocket.send(json.dumps(message))
 
-            async with websockets.connect(uri, ping_interval=5, ping_timeout=None) as websocket:
-                # Subscribe to markets
-                message = {"assets_ids": token_ids}
-                await websocket.send(json.dumps(message))
+            logger.info(f"Subscribed to {len(token_ids)} token IDs")
+            print(f"✓ Connected to WebSocket\n")
+            print("Waiting for price spikes...\n")
 
-                logger.info(f"Subscribed to {len(token_ids)} token IDs")
-                print(f"✓ Connected to WebSocket\n")
-                print("Waiting for price spikes...\n")
+            # Process incoming messages
+            while True:
+                try:
+                    message = await websocket.recv()
+                    json_data = json.loads(message)
 
-                # Process incoming messages
-                while True:
-                    try:
-                        message = await websocket.recv()
-                        json_data = json.loads(message)
+                    # Process market updates
+                    if isinstance(json_data, dict):
+                        await self._process_market_update([json_data])
+                    elif isinstance(json_data, list):
+                        await self._process_market_update(json_data)
 
-                        # Process market updates
-                        if isinstance(json_data, dict):
-                            await self._process_market_update([json_data])
-                        elif isinstance(json_data, list):
-                            await self._process_market_update(json_data)
+                except (ConnectionClosed, WebSocketException) as e:
+                    # WebSocket connection lost - raise to trigger reconnection
+                    logger.warning(f"WebSocket connection closed: {e}")
+                    raise
 
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
+                except json.JSONDecodeError as e:
+                    # Invalid JSON - log and continue
+                    logger.warning(f"Invalid JSON received: {e}")
+                    continue
 
-        except Exception as e:
-            logger.error(f"WebSocket error: {e}")
-            import traceback
-            traceback.print_exc()
+                except Exception as e:
+                    # Other errors - log and continue
+                    logger.error(f"Error processing message: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
 
     async def _process_market_update(self, updates: List[Dict[str, Any]]):
         """Process market updates from WebSocket."""
@@ -474,6 +751,26 @@ class MarketScanner:
         print(f"Time window: {spike.time_window}s")
         print(f"Spike strength: {spike.spike_strength:.2f} std devs")
 
+        # Display live game status if available
+        market_info = self.sports_markets.get(spike.market_id)
+        if market_info:
+            game_metadata = market_info.get('game_metadata', {})
+            if game_metadata and (game_metadata.get('live') or game_metadata.get('score')):
+                print(f"\n🏟️  Live Game Status:")
+                if game_metadata.get('live'):
+                    print(f"  Status: 🔴 LIVE")
+                elif game_metadata.get('ended'):
+                    print(f"  Status: ✅ ENDED")
+                else:
+                    print(f"  Status: Pre-game")
+
+                if game_metadata.get('score'):
+                    print(f"  Score: {game_metadata['score']}")
+                if game_metadata.get('period'):
+                    print(f"  Period: {game_metadata['period']}")
+                if game_metadata.get('elapsed'):
+                    print(f"  Time: {game_metadata['elapsed']}")
+
         # Find relevant news
         news_matches = self.news_monitor.match_to_market(spike.market_question, max_results=3)
 
@@ -486,29 +783,32 @@ class MarketScanner:
         else:
             print(f"\nNo related news found")
 
-        # LLM analysis (if available)
-        if self.llm_analyzer and news_matches:
-            print(f"\nRunning LLM analysis...")
-            analysis = self.llm_analyzer.analyze_spike(
-                market_question=spike.market_question,
-                current_price=spike.current_price,
-                previous_price=spike.previous_price,
-                price_change_pct=spike.price_change_pct,
-                news_items=[m['news'] for m in news_matches]
-            )
+        # LLM analysis (if available) - runs even without news if we have game data
+        if self.llm_analyzer:
+            # Only run LLM if we have game metadata OR news
+            if game_metadata or news_matches:
+                print(f"\nRunning LLM analysis...")
+                analysis = self.llm_analyzer.analyze_spike(
+                    market_question=spike.market_question,
+                    current_price=spike.current_price,
+                    previous_price=spike.previous_price,
+                    price_change_pct=spike.price_change_pct,
+                    game_metadata=game_metadata,
+                    news_items=[m['news'] for m in news_matches] if news_matches else None
+                )
 
-            if analysis:
-                print(f"\n📊 LLM Analysis:")
-                print(f"  Justified: {'YES' if analysis.justified else 'NO'}")
-                print(f"  Confidence: {analysis.confidence}%")
-                print(f"  Recommendation: {analysis.recommendation.upper()}")
-                print(f"  Reasoning: {analysis.reasoning}")
+                if analysis:
+                    print(f"\n📊 LLM Analysis:")
+                    print(f"  Justified: {'YES' if analysis.justified else 'NO'}")
+                    print(f"  Confidence: {analysis.confidence}%")
+                    print(f"  Recommendation: {analysis.recommendation.upper()}")
+                    print(f"  Reasoning: {analysis.reasoning}")
 
-                if analysis.near_resolution:
-                    print(f"  ⏰ Near resolution: {analysis.estimated_time_to_resolution}")
+                    if analysis.near_resolution:
+                        print(f"  ⏰ Near resolution: {analysis.estimated_time_to_resolution}")
 
-                should_trade = self.llm_analyzer.should_trade(analysis)
-                print(f"\n  {'✅ WOULD TRADE' if should_trade else '❌ SKIP'} (in live mode)")
+                    should_trade = self.llm_analyzer.should_trade(analysis)
+                    print(f"\n  {'✅ WOULD TRADE' if should_trade else '❌ SKIP'} (in live mode)")
 
         print(f"{'='*120}\n")
 

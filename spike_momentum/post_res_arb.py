@@ -165,7 +165,18 @@ class PostResolutionArbitrage:
 
         # Check if market is near-close or worth checking
         end_date_iso = market_info.get('end_date', '')
-        if not self._should_check_market(market_id, end_date_iso):
+
+        # Debug logging to see what we're getting
+        game_metadata = market_info.get('game_metadata', {})
+        logger.debug(
+            f"Market check [{market_id[:8]}...]: "
+            f"end_date='{end_date_iso}', "
+            f"live={game_metadata.get('live')}, "
+            f"ended={game_metadata.get('ended')}, "
+            f"score={game_metadata.get('score')}"
+        )
+
+        if not self._should_check_market(market_id, end_date_iso, game_metadata, market_info):
             return None
 
         # Check if we have a verified result for this market
@@ -221,15 +232,30 @@ class PostResolutionArbitrage:
             winning_token_id = yes_token if result.winner == 'yes' else no_token
 
             # Fetch order book for winning token
-            order_book = self.client.get_order_book(winning_token_id)
+            order_book = {}
+            try:
+                if hasattr(self.client, 'get_order_book_dict'):
+                    order_book = self.client.get_order_book_dict(winning_token_id)
+                else:
+                    order_book = self.client.get_order_book(winning_token_id)
+            except Exception as e:
+                logger.warning(f"Order book fetch failed for {winning_token_id}: {e}")
 
-            if not order_book or 'asks' not in order_book:
+            if not order_book:
                 logger.warning(f"Could not fetch order book for {winning_token_id}")
-                # Fall back to approximation
                 winning_token_price = current_price if result.winner == 'yes' else (1 - current_price)
             else:
-                # Get best ask (price we'd pay to buy)
-                asks = order_book.get('asks', [])
+                asks = order_book.get('asks', []) if isinstance(order_book, dict) else []
+
+                # If we got DataFrames (legacy), convert to lists
+                if not asks and not isinstance(order_book, dict):
+                    try:
+                        asks_df = order_book[1] if isinstance(order_book, tuple) else None
+                        if asks_df is not None and hasattr(asks_df, 'empty') and not asks_df.empty:
+                            asks = asks_df.to_dict('records')
+                    except Exception:
+                        asks = []
+
                 if not asks:
                     logger.warning(f"No asks available for {winning_token_id}")
                     return None  # Can't buy if no one is selling
@@ -301,12 +327,20 @@ class PostResolutionArbitrage:
         logger.info(f"Post-resolution arb opportunity: {opportunity}")
         return opportunity
 
-    def _should_check_market(self, market_id: str, end_date_iso: str) -> bool:
+    def _should_check_market(
+        self,
+        market_id: str,
+        end_date_iso: str,
+        game_metadata: Optional[Dict[str, Any]] = None,
+        market_info: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
         Determine if we should check this market based on end date, game status, and cache.
 
         Strategy:
-        - LIVE GAMES: Check every 2 minutes (game in progress!)
+        - LIVE/ENDED GAMES (from metadata): Always check! (highest priority)
+        - STARTED GAMES (from gameStartTime): Check every 5 minutes (high priority)
+        - LIVE GAMES (from cache): Check every 2 minutes (game in progress!)
         - Markets past end_date: Check every 5 minutes (arb opportunity!)
         - Markets ending <24 hours: Check every 30 minutes
         - Markets ending 1-7 days: Check every 6 hours
@@ -316,13 +350,61 @@ class PostResolutionArbitrage:
         Args:
             market_id: Market identifier
             end_date_iso: ISO format end date (e.g., "2026-12-31T23:59:59Z")
+            game_metadata: Optional game metadata with live/ended status
+            market_info: Optional full market info dict (for gameStartTime)
 
         Returns:
             True if should check, False if should skip
         """
         now = datetime.now()
 
-        # PRIORITY 1: Live games - check very frequently!
+        # PRIORITY 0: Game metadata says live or ended - ALWAYS check!
+        if game_metadata:
+            is_live = game_metadata.get('live', False)
+            is_ended = game_metadata.get('ended', False)
+
+            if is_live or is_ended:
+                logger.info(
+                    f"Checking {'LIVE' if is_live else 'ENDED'} game [{market_id[:8]}...]: "
+                    f"score={game_metadata.get('score', 'N/A')}"
+                )
+                # Clear not_ended_cache since game status changed to live/ended
+                if market_id in self.not_ended_cache:
+                    logger.debug(f"Clearing not_ended_cache for {market_id[:8]}... (now {'LIVE' if is_live else 'ENDED'})")
+                    del self.not_ended_cache[market_id]
+
+                # Update live games cache if live
+                if is_live:
+                    self.live_games[market_id] = now
+                return True
+
+        # PRIORITY 1: Check if game has started (using gameStartTime)
+        # If game started in the past, check frequently regardless of endDate
+        game_start_time_str = market_info.get('game_start_time') if market_info else None
+        if game_start_time_str:
+            try:
+                from dateutil import parser
+                game_start_time = parser.parse(game_start_time_str).replace(tzinfo=None)
+                time_since_start = (now - game_start_time).total_seconds()
+
+                # Game started in the past - should be live or ended!
+                if time_since_start > 0:
+                    # Check if we've already checked recently
+                    if market_id in self.not_ended_cache:
+                        last_checked, _ = self.not_ended_cache[market_id]
+                        time_since_check = (now - last_checked).total_seconds()
+
+                        # Check post-game markets every 5 minutes
+                        if time_since_check < 5 * 60:
+                            logger.debug(f"Skipping POST-START game {market_id[:8]}... (started {time_since_start/3600:.1f}h ago, checked {time_since_check/60:.1f}m ago)")
+                            return False
+
+                    logger.info(f"Checking POST-START game [{market_id[:8]}...]: started {time_since_start/3600:.1f}h ago")
+                    return True
+            except Exception as e:
+                logger.debug(f"Could not parse game_start_time '{game_start_time_str}': {e}")
+
+        # PRIORITY 2: Live games (from cache) - check very frequently!
         if market_id in self.live_games:
             last_checked = self.live_games[market_id]
             time_since_check = (now - last_checked).total_seconds()
