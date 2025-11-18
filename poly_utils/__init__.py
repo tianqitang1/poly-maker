@@ -29,6 +29,14 @@ except ImportError:
     MarketEmbeddingCache = None
     SEMANTIC_SEARCH_AVAILABLE = False
 
+# Optional next-news-api integration
+try:
+    from poly_utils.next_news_integration import NextNewsAPIManager
+    NEXT_NEWS_API_AVAILABLE = True
+except ImportError:
+    NextNewsAPIManager = None
+    NEXT_NEWS_API_AVAILABLE = False
+
 __all__ = [
     'LLMClient',
     'NewsFeed',
@@ -41,4 +49,7 @@ __all__ = [
     'SearchResult',
     'MarketEmbeddingCache',
     'SEMANTIC_SEARCH_AVAILABLE',
+    # Next News API (optional)
+    'NextNewsAPIManager',
+    'NEXT_NEWS_API_AVAILABLE',
 ]

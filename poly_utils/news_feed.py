@@ -47,6 +47,14 @@ except ImportError:
     SemanticSearchEngine = None
     SearchResult = None
 
+# Optional next-news-api support
+try:
+    from poly_utils.next_news_integration import NextNewsAPIManager
+    NEXT_NEWS_API_AVAILABLE = True
+except ImportError:
+    NEXT_NEWS_API_AVAILABLE = False
+    NextNewsAPIManager = None
+
 logger = get_logger('poly_utils.news_feed')
 
 
@@ -166,9 +174,23 @@ class NewsFeed:
                     "Install: pip install chromadb sentence-transformers"
                 )
 
+        # Initialize next-news-api if enabled
+        self.next_news_api = None
+        next_news_config = self.sources_config.get('next_news_api', {})
+        if next_news_config.get('enabled', False):
+            if NEXT_NEWS_API_AVAILABLE:
+                try:
+                    self.next_news_api = NextNewsAPIManager(next_news_config)
+                    logger.info("Next News API integration enabled")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize Next News API: {e}")
+            else:
+                logger.warning("Next News API requested but module not available")
+
         logger.info(
             f"Initialized NewsFeed (enabled={self.enabled}, categories={self.categories}, "
-            f"semantic_search={self.semantic_search is not None})"
+            f"semantic_search={self.semantic_search is not None}, "
+            f"next_news_api={self.next_news_api is not None})"
         )
 
     def fetch_news(
@@ -218,6 +240,10 @@ class NewsFeed:
         # General news
         if not category or category == 'general':
             all_items.extend(self._fetch_general_news())
+
+        # Next News API (if enabled)
+        if self.next_news_api:
+            all_items.extend(self._fetch_next_news_api(category))
 
         # Filter by age
         cutoff_time = datetime.now() - timedelta(seconds=self.max_age)
@@ -356,6 +382,51 @@ class NewsFeed:
                 source='AP News',
                 category='general'
             ))
+
+        return items
+
+    def _fetch_next_news_api(self, category: Optional[str] = None) -> List[NewsItem]:
+        """Fetch news from next-news-api."""
+        if not self.next_news_api:
+            return []
+
+        items = []
+        config = self.sources_config.get('next_news_api', {})
+
+        # Get configured sources (default to google)
+        sources = config.get('sources', ['google'])
+
+        # Map our categories to next-news-api categories
+        category_map = {
+            'sports': 'sports',
+            'crypto': 'technology',  # Closest match
+            'politics': 'politics',
+            'general': 'general',
+            'technology': 'technology'
+        }
+
+        next_category = category_map.get(category, category) if category else None
+
+        # Get query if specified
+        query = config.get('query')
+
+        # Fetch from configured sources
+        try:
+            all_items = self.next_news_api.fetch_multiple_sources(
+                sources=sources,
+                query=query,
+                category=next_category,
+                max_results_per_source=config.get('max_results_per_source', 10)
+            )
+
+            # Filter by category if specified
+            if category:
+                all_items = [item for item in all_items if item.category == category]
+
+            items.extend(all_items)
+
+        except Exception as e:
+            logger.error(f"Failed to fetch from next-news-api: {e}")
 
         return items
 

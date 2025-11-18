@@ -212,6 +212,169 @@ data = item.to_dict()
 
 ---
 
+## 📡 Next News API Integration (Optional)
+
+Integrate with [next-news-api](https://github.com/riad-azz/next-news-api) for access to multiple aggregated news sources (Google News, NewsAPI, NewsData) via a unified API. The server automatically starts/stops as needed.
+
+### Why Next News API?
+
+- **Multiple sources in one**: Google News, NewsAPI, NewsData, and more
+- **Auto-managed**: Server starts automatically when needed
+- **No manual setup**: Dependencies and build handled automatically
+- **Free sources available**: Google News requires no API key
+- **Unified interface**: Same API for all sources
+
+### Setup
+
+1. **Clone next-news-api**:
+   ```bash
+   git clone https://github.com/riad-azz/next-news-api ~/next-news-api
+   ```
+
+2. **Configure in poly_utils**:
+   ```yaml
+   news:
+     sources:
+       next_news_api:
+         enabled: true
+         server_path: "~/next-news-api"
+         port: 3000
+         auto_start: true
+         sources:
+           - google  # Free, no API key needed
+         max_results_per_source: 10
+   ```
+
+3. **Use automatically**:
+   ```python
+   from poly_utils import NewsFeed
+
+   feed = NewsFeed(config)
+   # Server auto-starts on first request
+   news = feed.fetch_news(category='sports')
+   # Server auto-stops on exit
+   ```
+
+### Direct Usage
+
+You can also use NextNewsAPIManager directly:
+
+```python
+from poly_utils import NextNewsAPIManager
+
+config = {
+    'enabled': True,
+    'server_path': '~/next-news-api',
+    'port': 3000,
+    'auto_start': True
+}
+
+manager = NextNewsAPIManager(config)
+
+# Fetch from single source
+news = manager.fetch_news(
+    source='google',
+    query='cryptocurrency',
+    category='technology',
+    max_results=10
+)
+
+# Fetch from multiple sources
+news = manager.fetch_multiple_sources(
+    sources=['google', 'newsapi'],
+    query='NBA playoffs',
+    category='sports',
+    max_results_per_source=5
+)
+
+# Check status
+status = manager.get_status()
+print(f"Server running: {status['running']}")
+print(f"Available sources: {status['available_sources']}")
+
+# Manual cleanup (optional - auto-cleanup on exit)
+manager.stop_server()
+```
+
+### Configuration Options
+
+```yaml
+next_news_api:
+  enabled: true
+  server_path: "~/next-news-api"    # Path to cloned repo
+  port: 3000                          # Server port
+  host: "localhost"                   # Server host
+  auto_start: true                    # Auto-start if not running
+  startup_timeout: 30                 # Seconds to wait for startup
+
+  sources:                            # News sources to use
+    - google                          # Google News (free)
+    - newsapi                         # NewsAPI.org (requires API key)
+    - newsdata                        # NewsData.io (requires API key)
+
+  query: null                         # Optional search query filter
+  max_results_per_source: 10          # Max results per source
+```
+
+### Available Sources
+
+| Source | API Key Required | Cost | Coverage |
+|--------|-----------------|------|----------|
+| **google** | ❌ No | Free | Global news |
+| newsapi | ✅ Yes | Free tier available | 80+ countries |
+| newsdata | ✅ Yes | Free tier available | 48+ countries |
+
+**Recommendation**: Start with Google News (free, no API key). Add other sources as needed.
+
+### Features
+
+**Automatic Server Management:**
+- Server starts automatically on first request
+- Health checks before each request
+- Auto-restart if server crashes
+- Clean shutdown on exit
+
+**Error Handling:**
+- Graceful fallback if server fails to start
+- Timeout protection
+- Automatic dependency installation
+- Build on first run
+
+**Integration with NewsFeed:**
+- Seamlessly integrated as another news source
+- Automatic category detection
+- Deduplication with RSS sources
+- Compatible with semantic search
+
+### Example: Sports News with Next News API
+
+```python
+config = {
+    'enabled': True,
+    'categories': ['sports'],
+    'sources': {
+        'espn_rss': {'enabled': True, 'leagues': ['nfl', 'nba']},
+        'next_news_api': {
+            'enabled': True,
+            'server_path': '~/next-news-api',
+            'sources': ['google'],
+            'max_results_per_source': 10
+        }
+    }
+}
+
+feed = NewsFeed(config)
+
+# Fetches from both ESPN RSS and Google News (via next-news-api)
+news = feed.fetch_news(category='sports', max_items=20)
+
+# Automatic deduplication combines unique items from both sources
+for item in news:
+    print(f"[{item.source}] {item.title}")
+```
+
+---
+
 ## 🔍 Semantic Search (RECOMMENDED!)
 
 Semantic search uses embeddings to find relevant news instead of keyword matching. **This dramatically improves matching accuracy.**

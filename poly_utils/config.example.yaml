@@ -173,6 +173,36 @@ news:
     ap_news_rss:
       enabled: false
 
+    # ------------------------------------------------------------------------
+    # NEXT NEWS API (Aggregates multiple sources)
+    # ------------------------------------------------------------------------
+    # Provides access to Google News, NewsAPI, and NewsData via unified API
+    # Requires local next-news-api server (auto-starts if configured)
+    # Setup: git clone https://github.com/riad-azz/next-news-api ~/next-news-api
+    next_news_api:
+      enabled: false               # Set to true to enable
+
+      # Path to next-news-api directory (will auto-install dependencies)
+      server_path: "~/next-news-api"  # or absolute path
+
+      # Server settings
+      port: 3000
+      host: "localhost"
+      auto_start: true             # Automatically start server if not running
+      startup_timeout: 30          # Seconds to wait for server startup
+
+      # News sources to use (can use multiple)
+      sources:
+        - google                   # Google News (free, no API key)
+        # - newsapi                # NewsAPI.org (requires API key)
+        # - newsdata               # NewsData.io (requires API key)
+
+      # Optional query filter (e.g., "cryptocurrency", "NBA")
+      # query: null
+
+      # Max results per source
+      max_results_per_source: 10
+
 
 # ============================================================================
 # BOT-SPECIFIC USAGE EXAMPLES
