@@ -1,0 +1,283 @@
+# Example configuration for poly_utils LLM and News Feed
+# Copy this to your bot's config.yaml and customize as needed
+
+# ============================================================================
+# LLM CLIENT CONFIGURATION
+# ============================================================================
+llm:
+  # Enable/disable LLM features
+  enabled: true
+
+  # Provider selection: gemini, anthropic, openai, openrouter, deepseek
+  provider: "gemini"  # Recommended for cost/speed balance
+
+  # Rate limiting (adjust based on your API plan)
+  max_requests_per_minute: 15    # Gemini free tier: 15 RPM
+  max_calls_per_hour: 100         # Hourly limit
+  max_cost_per_day: 10.0          # USD daily budget
+
+  # Retry and timeout settings
+  max_retries: 2                  # Number of retries on failure
+  timeout: 10                     # Seconds before timeout
+
+  # Provider-specific settings
+  gemini:
+    model: "gemini-2.5-flash"     # Fast and cheap
+    api_key_env: "GEMINI_API_KEY" # Environment variable name
+
+  anthropic:
+    model: "claude-haiku-3-5"     # Fast Claude model
+    api_key_env: "ANTHROPIC_API_KEY"
+
+  openai:
+    model: "gpt-4o-mini"          # Cheap GPT-4 variant
+    api_key_env: "OPENAI_API_KEY"
+
+  openrouter:
+    model: "google/gemini-2.5-flash"  # Access any model via OpenRouter
+    api_key_env: "OPENROUTER_API_KEY"
+
+  deepseek:
+    model: "deepseek-chat"        # Very cheap alternative
+    api_key_env: "DEEPSEEK_API_KEY"
+
+
+# ============================================================================
+# NEWS FEED CONFIGURATION
+# ============================================================================
+news:
+  # Enable/disable news features
+  enabled: true
+
+  # Cache and refresh settings
+  refresh_interval: 60            # Seconds between fetches
+  max_age: 3600                   # Max age of news items (1 hour)
+  relevance_threshold: 0.6        # 0-1 score for market matching
+
+  # Categories to monitor (remove categories you don't need)
+  categories:
+    - sports
+    - crypto
+    - politics
+    - general
+
+  # ============================================================================
+  # SEMANTIC SEARCH (OPTIONAL - Much better than keyword matching!)
+  # ============================================================================
+  # Semantic search uses embeddings to find relevant news instead of keywords.
+  # This dramatically improves matching accuracy.
+  #
+  # Example improvement:
+  #   Market: "Will Chet Holmgren win NBA DPOY?"
+  #   Keyword matching: Matches "NFL report cards" (0.29) ❌
+  #   Semantic search: Matches "Holmgren records 5 blocks in Thunder win" (0.87) ✅
+  #
+  # Dependencies: pip install chromadb sentence-transformers
+  # Optional: pip install openai cohere (for cloud embeddings)
+
+  semantic_search:
+    # Enable semantic search (RECOMMENDED)
+    enabled: false               # Set to true to enable
+
+    # Embedding provider
+    # - sentence_transformer: Local, free, fast (RECOMMENDED for most use cases)
+    # - openai: Cloud, high quality, costs ~$0.02 per 1M tokens
+    # - cohere: Cloud, optimized for search, costs ~$0.10 per 1M tokens
+    # - gemini: Cloud, very cheap, ~$0.00001 per 1000 chars
+    provider: "sentence_transformer"
+
+    # Embedding model (provider-specific)
+    model: "all-MiniLM-L6-v2"    # Fast, 384-dim (sentence_transformer)
+    # model: "all-mpnet-base-v2"        # Higher quality, 768-dim (sentence_transformer)
+    # model: "text-embedding-3-small"    # OpenAI
+    # model: "embed-english-v3.0"        # Cohere
+    # model: "models/embedding-001"      # Gemini
+
+    # API keys (for cloud providers)
+    # api_key_env: "OPENAI_API_KEY"     # For OpenAI
+    # api_key_env: "COHERE_API_KEY"     # For Cohere
+    # api_key_env: "GEMINI_API_KEY"     # For Gemini
+
+    # Similarity threshold (0-1, higher = more strict)
+    similarity_threshold: 0.5     # Default: 0.5 (adjust based on results)
+
+    # Cache market embeddings for faster repeat searches
+    cache_markets: true           # Recommended: true
+
+    # ChromaDB storage directory
+    chroma_dir: ".cache/chromadb"
+
+    # Automatic cleanup of old markets
+    cleanup_old_markets_hours: 168  # Remove markets older than 7 days
+
+
+  # ============================================================================
+  # NEWS SOURCES
+  # ============================================================================
+  sources:
+    # ------------------------------------------------------------------------
+    # SPORTS NEWS
+    # ------------------------------------------------------------------------
+    espn_rss:
+      enabled: true
+      leagues:
+        - nfl
+        - nba
+        - mlb
+        - nhl
+        - soccer
+        # - ncaaf  # College football
+        # - ncaab  # College basketball
+
+    thescore_rss:
+      enabled: true
+      leagues:
+        - nfl
+        - nba
+        - mlb
+        - nhl
+
+    # ------------------------------------------------------------------------
+    # CRYPTO NEWS
+    # ------------------------------------------------------------------------
+    coindesk_rss:
+      enabled: false               # Enable for crypto markets
+
+    cointelegraph_rss:
+      enabled: false
+
+    bitcoin_magazine_rss:
+      enabled: false
+
+    decrypt_rss:
+      enabled: false
+
+    # ------------------------------------------------------------------------
+    # POLITICAL NEWS
+    # ------------------------------------------------------------------------
+    politico_rss:
+      enabled: false               # Enable for election/politics markets
+
+    the_hill_rss:
+      enabled: false
+
+    real_clear_politics_rss:
+      enabled: false
+
+    # ------------------------------------------------------------------------
+    # GENERAL NEWS
+    # ------------------------------------------------------------------------
+    reuters_rss:
+      enabled: false               # Enable for general news markets
+
+    ap_news_rss:
+      enabled: false
+
+    # ------------------------------------------------------------------------
+    # NEXT NEWS API (Aggregates multiple sources)
+    # ------------------------------------------------------------------------
+    # Provides access to Google News, NewsAPI, and NewsData via unified API
+    # Requires local next-news-api server (auto-starts if configured)
+    # Setup: git clone https://github.com/riad-azz/next-news-api ~/next-news-api
+    next_news_api:
+      enabled: false               # Set to true to enable
+
+      # Path to next-news-api directory (will auto-install dependencies)
+      server_path: "~/next-news-api"  # or absolute path
+
+      # Server settings
+      port: 3000
+      host: "localhost"
+      auto_start: true             # Automatically start server if not running
+      startup_timeout: 30          # Seconds to wait for server startup
+
+      # News sources to use (can use multiple)
+      # API Aggregators (free, no API key for google)
+      sources:
+        - google                   # Google News (free, no API key)
+        # - newsapi                # NewsAPI.org (requires API key)
+        # - newsdata               # NewsData.io (requires API key)
+
+      # Built-in RSS Feeds (30+ sources, all free!)
+      # Uncomment any sources you want to use:
+      #   # International
+      #   - INTER-YN               # Yahoo News
+      #   - INTER-LH               # Life Hacker
+      #   # United States
+      #   - US-NYT                 # New York Times
+      #   - US-CNNN                # CNN News
+      #   - US-HP                  # Huffington Post
+      #   - US-FN                  # Fox News
+      #   - US-R                   # Reuters
+      #   - US-P                   # Politico
+      #   - US-LAT                 # Los Angeles Times
+      #   # Australia
+      #   - AU-SMHLN               # Sydney Morning Herald
+      #   - AU-ABCN                # ABC News
+      #   # Canada
+      #   - CA-CBCN                # CBC News
+      #   - CA-CTVN                # CTV News
+      #   # Germany
+      #   - DE-ZO                  # ZEIT ONLINE
+      #   - DE-DW                  # Deutsche Welle
+      #   # See poly_utils/next_news_integration.py for complete list
+
+      # Optional query filter (e.g., "cryptocurrency", "NBA")
+      # query: null
+
+      # Max results per source
+      max_results_per_source: 10
+
+
+# ============================================================================
+# BOT-SPECIFIC USAGE EXAMPLES
+# ============================================================================
+
+# Example for spike_momentum (sports focus with semantic search):
+# llm:
+#   enabled: true
+#   provider: "gemini"
+#   min_confidence: 70
+# news:
+#   enabled: true
+#   categories: ["sports"]
+#   semantic_search:
+#     enabled: true
+#     provider: "sentence_transformer"
+#     similarity_threshold: 0.6
+#   sources:
+#     espn_rss: {enabled: true, leagues: [nfl, nba]}
+#     thescore_rss: {enabled: true, leagues: [nfl, nba]}
+
+# Example for crypto arbitrage bot:
+# llm:
+#   enabled: true
+#   provider: "deepseek"  # Cheaper for high-frequency
+# news:
+#   enabled: true
+#   categories: ["crypto"]
+#   sources:
+#     coindesk_rss: {enabled: true}
+#     cointelegraph_rss: {enabled: true}
+
+# Example for election bot:
+# llm:
+#   enabled: true
+#   provider: "anthropic"  # Higher quality for nuanced analysis
+# news:
+#   enabled: true
+#   categories: ["politics"]
+#   sources:
+#     politico_rss: {enabled: true}
+#     the_hill_rss: {enabled: true}
+#     real_clear_politics_rss: {enabled: true}
+
+# Example for market making (sentiment analysis):
+# llm:
+#   enabled: true
+#   provider: "gemini"
+#   max_requests_per_minute: 30  # Higher throughput
+# news:
+#   enabled: true
+#   categories: ["sports", "crypto", "politics"]  # Monitor all
+#   refresh_interval: 30  # More frequent updates
