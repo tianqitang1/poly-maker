@@ -101,6 +101,10 @@ class LLMAnalyzer:
             additional_context=additional_context
         )
 
+        # Log the prompt being sent to LLM
+        logger.debug(f"LLM Prompt for '{market_question[:50]}...':")
+        logger.debug(f"Prompt:\n{prompt[:1000]}..." if len(prompt) > 1000 else f"Prompt:\n{prompt}")
+
         # Call LLM
         response = self.llm.analyze(prompt, json_mode=True)
 

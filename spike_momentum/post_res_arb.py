@@ -165,7 +165,18 @@ class PostResolutionArbitrage:
 
         # Check if market is near-close or worth checking
         end_date_iso = market_info.get('end_date', '')
-        if not self._should_check_market(market_id, end_date_iso):
+
+        # Debug logging to see what we're getting
+        game_metadata = market_info.get('game_metadata', {})
+        logger.debug(
+            f"Market check [{market_id[:8]}...]: "
+            f"end_date='{end_date_iso}', "
+            f"live={game_metadata.get('live')}, "
+            f"ended={game_metadata.get('ended')}, "
+            f"score={game_metadata.get('score')}"
+        )
+
+        if not self._should_check_market(market_id, end_date_iso, game_metadata):
             return None
 
         # Check if we have a verified result for this market
@@ -301,12 +312,18 @@ class PostResolutionArbitrage:
         logger.info(f"Post-resolution arb opportunity: {opportunity}")
         return opportunity
 
-    def _should_check_market(self, market_id: str, end_date_iso: str) -> bool:
+    def _should_check_market(
+        self,
+        market_id: str,
+        end_date_iso: str,
+        game_metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
         Determine if we should check this market based on end date, game status, and cache.
 
         Strategy:
-        - LIVE GAMES: Check every 2 minutes (game in progress!)
+        - LIVE/ENDED GAMES (from metadata): Always check! (highest priority)
+        - LIVE GAMES (from cache): Check every 2 minutes (game in progress!)
         - Markets past end_date: Check every 5 minutes (arb opportunity!)
         - Markets ending <24 hours: Check every 30 minutes
         - Markets ending 1-7 days: Check every 6 hours
@@ -316,13 +333,29 @@ class PostResolutionArbitrage:
         Args:
             market_id: Market identifier
             end_date_iso: ISO format end date (e.g., "2026-12-31T23:59:59Z")
+            game_metadata: Optional game metadata with live/ended status
 
         Returns:
             True if should check, False if should skip
         """
         now = datetime.now()
 
-        # PRIORITY 1: Live games - check very frequently!
+        # PRIORITY 0: Game metadata says live or ended - ALWAYS check!
+        if game_metadata:
+            is_live = game_metadata.get('live', False)
+            is_ended = game_metadata.get('ended', False)
+
+            if is_live or is_ended:
+                logger.info(
+                    f"Checking {'LIVE' if is_live else 'ENDED'} game [{market_id[:8]}...]: "
+                    f"score={game_metadata.get('score', 'N/A')}"
+                )
+                # Update live games cache if live
+                if is_live:
+                    self.live_games[market_id] = now
+                return True
+
+        # PRIORITY 1: Live games (from cache) - check very frequently!
         if market_id in self.live_games:
             last_checked = self.live_games[market_id]
             time_since_check = (now - last_checked).total_seconds()
