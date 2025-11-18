@@ -1,0 +1,129 @@
+# LLM Maker Bot Configuration
+# LLM-aided market making strategy combining AI decision-making with fast execution
+
+# ============================================================================
+# LLM CONFIGURATION
+# ============================================================================
+llm:
+  enabled: true
+
+  # Provider selection: gemini (recommended), anthropic, openai, openrouter, deepseek
+  provider: "gemini"
+
+  # Rate limiting (adjust based on your API plan)
+  max_requests_per_minute: 15    # Gemini free tier: 15 RPM
+  max_calls_per_hour: 100         # Hourly limit
+  max_cost_per_day: 10.0          # USD daily budget
+
+  # Retry and timeout settings
+  max_retries: 2
+  timeout: 15  # Slightly longer for complex analysis
+
+  # Provider-specific settings
+  gemini:
+    model: "gemini-2.5-flash"     # Fast and cheap for real-time trading
+    api_key_env: "GEMINI_API_KEY"
+
+  anthropic:
+    model: "claude-haiku-3-5"     # Alternative: higher quality
+    api_key_env: "ANTHROPIC_API_KEY"
+
+  openai:
+    model: "gpt-4o-mini"
+    api_key_env: "OPENAI_API_KEY"
+
+  deepseek:
+    model: "deepseek-chat"        # Very cheap alternative
+    api_key_env: "DEEPSEEK_API_KEY"
+
+# ============================================================================
+# STRATEGY CONFIGURATION
+# ============================================================================
+strategy:
+  # Decision loop interval (how often to query LLM)
+  decision_interval: 45           # Seconds between LLM queries
+
+  # Number of top markets to analyze with LLM
+  max_markets_per_query: 5       # Focus on best opportunities
+
+  # Confidence thresholds
+  min_confidence_to_trade: 0.6   # 0-1 scale, LLM confidence threshold
+  min_confidence_to_size_up: 0.8 # Higher confidence = larger positions
+
+  # Position sizing (influenced by LLM confidence)
+  base_position_size: 50          # Base size for trades
+  max_position_size: 200          # Maximum position per side
+  confidence_multiplier: 1.5      # Multiply size by (confidence - 0.5) * multiplier
+
+  # Spread adjustment based on LLM bias
+  # If LLM says "bullish", quote tighter on buy side, wider on sell side
+  directional_spread_adjustment: 2  # Number of ticks to adjust
+
+  # Risk management
+  stop_loss_percentage: -5.0      # Exit if down 5% (LLM can override)
+  take_profit_percentage: 8.0     # Target 8% profit (LLM can override)
+  max_positions: 10               # Max concurrent positions
+
+  # Fallback to pre-configured logic if LLM unavailable
+  fallback_enabled: true
+  fallback_after_failures: 3      # Switch to fallback after N consecutive LLM failures
+
+# ============================================================================
+# EXECUTION ENGINE CONFIGURATION
+# ============================================================================
+execution:
+  # Order placement
+  tick_improvement: 1             # How many ticks to improve over best bid/ask
+  min_order_size: 10              # Minimum order size
+  max_order_lifetime: 300         # Cancel orders after 5 min if not filled
+
+  # Risk checks
+  max_capital_allocation: 0.8     # Use max 80% of available capital
+  max_exposure_per_market: 0.3    # Max 30% of capital per market
+
+  # Order book analysis
+  min_liquidity_threshold: 50     # Skip markets with less than $50 liquidity
+  max_spread_threshold: 0.10      # Skip markets with spread > 10 cents
+
+  # Position management
+  rebalance_interval: 120         # Check positions every 2 minutes
+  merge_positions_threshold: 10   # Merge opposing positions > 10 shares
+
+# ============================================================================
+# MARKET SELECTION CRITERIA
+# ============================================================================
+market_selection:
+  # Filters for which markets to consider
+  min_volume_24h: 100             # Minimum $100 daily volume
+  max_volatility_3h: 0.15         # Skip if 3h volatility > 15%
+
+  # Preferred market characteristics (LLM will prioritize these)
+  prefer_trending: true           # Markets with clear price direction
+  prefer_liquid: true             # Markets with tight spreads
+  prefer_active: true             # Markets with recent activity
+
+  # Market categories (empty = all categories)
+  categories: []                  # e.g., ['crypto', 'politics', 'sports']
+
+  # Closing time filters
+  min_hours_until_close: 2        # Skip markets closing within 2 hours
+  max_hours_until_close: 720      # Skip markets closing > 30 days out
+
+# ============================================================================
+# LOGGING AND MONITORING
+# ============================================================================
+logging:
+  # Log LLM decisions for analysis
+  log_llm_decisions: true
+  decision_log_file: "llm_maker/logs/llm_decisions.jsonl"
+
+  # Log execution details
+  log_executions: true
+  execution_log_file: "llm_maker/logs/executions.jsonl"
+
+  # Performance tracking
+  track_pnl: true
+  pnl_log_file: "llm_maker/logs/pnl.jsonl"
+
+  # Debug mode (more verbose logging)
+  debug: false
