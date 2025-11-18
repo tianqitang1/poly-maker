@@ -350,6 +350,11 @@ class PostResolutionArbitrage:
                     f"Checking {'LIVE' if is_live else 'ENDED'} game [{market_id[:8]}...]: "
                     f"score={game_metadata.get('score', 'N/A')}"
                 )
+                # Clear not_ended_cache since game status changed to live/ended
+                if market_id in self.not_ended_cache:
+                    logger.debug(f"Clearing not_ended_cache for {market_id[:8]}... (now {'LIVE' if is_live else 'ENDED'})")
+                    del self.not_ended_cache[market_id]
+
                 # Update live games cache if live
                 if is_live:
                     self.live_games[market_id] = now
