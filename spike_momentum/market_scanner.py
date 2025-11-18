@@ -412,6 +412,8 @@ class MarketScanner:
                 candidates_to_check = live_candidates[:20]
 
                 live_count = 0
+                ended_count = 0
+
                 for condition_id, market_slug in candidates_to_check:
                     game_metadata = await self._fetch_live_game_status(market_slug)
 
@@ -427,8 +429,48 @@ class MarketScanner:
                                 f"Period: {game_metadata.get('period', 'N/A')}"
                             )
 
+                        if game_metadata.get('ended'):
+                            ended_count += 1
+                            logger.info(
+                                f"🏁 Game ended: {self.sports_markets[condition_id]['question'][:50]} - "
+                                f"Final score: {game_metadata.get('score', 'N/A')}"
+                            )
+
+                        # Check for post-resolution arb on live or ended games
+                        if (game_metadata.get('live') or game_metadata.get('ended')) and self.post_res_arb:
+                            if self.post_res_arb.enabled:
+                                # Fetch current order book to get price
+                                try:
+                                    market_info = self.sports_markets[condition_id]
+                                    yes_token = market_info.get('yes_token')
+                                    no_token = market_info.get('no_token')
+
+                                    if yes_token and no_token:
+                                        book = await self.client.get_order_book(yes_token)
+
+                                        if book and 'bids' in book and 'asks' in book:
+                                            best_bid = float(book['bids'][0]['price']) if book['bids'] else None
+                                            best_ask = float(book['asks'][0]['price']) if book['asks'] else None
+
+                                            if best_bid and best_ask:
+                                                mid_price = (best_bid + best_ask) / 2
+
+                                                arb_opp = await self.post_res_arb.check_market_for_arb(
+                                                    market_id=condition_id,
+                                                    market_question=market_info['question'],
+                                                    current_price=mid_price,
+                                                    market_info=market_info
+                                                )
+
+                                                if arb_opp:
+                                                    await self._handle_post_res_arb(arb_opp)
+                                except Exception as e:
+                                    logger.error(f"Error checking post-res arb for {condition_id[:8]}...: {e}")
+
                 if live_count > 0:
                     logger.info(f"Updated {live_count} live games")
+                if ended_count > 0:
+                    logger.info(f"Detected {ended_count} ended games")
 
             except Exception as e:
                 logger.error(f"Error in live game updater: {e}")
