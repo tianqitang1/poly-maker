@@ -355,7 +355,17 @@ class MarketScanner:
                     # Extract events data (same structure as manual curl)
                     events = data.get('events', [])
                     if not events or len(events) == 0:
-                        return None
+                        logger.debug(f"No events array for {market_slug}")
+                        # Return empty metadata to indicate "not a live game market"
+                        return {
+                            'live': False,
+                            'ended': False,
+                            'score': '',
+                            'period': '',
+                            'elapsed': '',
+                            'startTime': '',
+                            'finishedTimestamp': '',
+                        }
 
                     event = events[0]
                     game_metadata = {
@@ -367,6 +377,10 @@ class MarketScanner:
                         'startTime': event.get('startTime', ''),
                         'finishedTimestamp': event.get('finishedTimestamp', ''),
                     }
+
+                    # Log if we found a live or ended game
+                    if game_metadata.get('live') or game_metadata.get('ended'):
+                        logger.info(f"Found {'LIVE' if game_metadata.get('live') else 'ENDED'} game: {market_slug}")
 
                     return game_metadata
 
@@ -405,16 +419,20 @@ class MarketScanner:
                         live_candidates.append((condition_id, market_slug))
 
                 if not live_candidates:
+                    logger.debug("No live game candidates found")
                     continue
 
                 # Fetch live status for up to 20 markets per iteration (rate limiting)
                 # Prioritize markets that were previously live
                 candidates_to_check = live_candidates[:20]
+                logger.info(f"Checking {len(candidates_to_check)} markets for live game status (out of {len(live_candidates)} candidates)")
 
                 live_count = 0
                 ended_count = 0
+                checked_count = 0
 
                 for condition_id, market_slug in candidates_to_check:
+                    checked_count += 1
                     game_metadata = await self._fetch_live_game_status(market_slug)
 
                     if game_metadata:
@@ -467,10 +485,10 @@ class MarketScanner:
                                 except Exception as e:
                                     logger.error(f"Error checking post-res arb for {condition_id[:8]}...: {e}")
 
-                if live_count > 0:
-                    logger.info(f"Updated {live_count} live games")
-                if ended_count > 0:
-                    logger.info(f"Detected {ended_count} ended games")
+                logger.info(f"Live game polling: checked {checked_count} markets, found {live_count} live, {ended_count} ended")
+
+                if live_count == 0 and ended_count == 0 and checked_count > 0:
+                    logger.debug(f"No live or ended games found in {checked_count} markets checked")
 
             except Exception as e:
                 logger.error(f"Error in live game updater: {e}")
