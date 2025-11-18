@@ -201,9 +201,12 @@ class OpenAIProvider(BaseLLMProvider):
                 'max_completion_tokens': 1024,  # Updated from max_tokens for new API
             }
 
-            # Some models (like gpt-5-nano) don't support custom temperature
-            # Only add temperature for models that support it
-            if 'nano' not in self.model.lower() and 'o1' not in self.model.lower():
+            # Some models don't support custom temperature
+            # Try to detect based on model name
+            models_without_temp = ['nano', 'o1', 'o3', 'mini']
+            skip_temperature = any(name in self.model.lower() for name in models_without_temp)
+
+            if not skip_temperature:
                 kwargs['temperature'] = 0.3
 
             if json_mode:
@@ -212,7 +215,18 @@ class OpenAIProvider(BaseLLMProvider):
                 kwargs['messages'] = [{"role": "user", "content": prompt}]
 
             # Make API call
-            response = self.client.chat.completions.create(**kwargs)
+            try:
+                response = self.client.chat.completions.create(**kwargs)
+            except Exception as api_error:
+                # If temperature not supported, retry without it
+                error_str = str(api_error)
+                if 'temperature' in error_str.lower() and 'unsupported' in error_str.lower():
+                    logger.warning(f"Model {self.model} doesn't support temperature parameter, retrying without it")
+                    if 'temperature' in kwargs:
+                        del kwargs['temperature']
+                    response = self.client.chat.completions.create(**kwargs)
+                else:
+                    raise
 
             content = response.choices[0].message.content
 
