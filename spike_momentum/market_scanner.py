@@ -93,7 +93,8 @@ class MarketScanner:
         # Market data
         self.sports_markets = {}  # market_id -> market_info
         self.market_questions = {}  # market_id -> question text
-        self._live_poll_offset = 0  # round-robin cursor for live-game polling batches
+        self._live_poll_offset = 0  # round-robin cursor for normal priority polling batches
+        self._started_poll_offset = 0 # round-robin cursor for started games polling batches
 
         # Compile regex patterns once
         self.keyword_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.SPORTS_KEYWORDS]
@@ -417,21 +418,46 @@ class MarketScanner:
                 now = datetime.utcnow()
 
                 # Build prioritized list of candidates
-                high_priority = []  # Games that started or were previously live
-                normal_priority = []  # Everything else
+                actually_live = []    # Priority 0: Metadata says LIVE (check every loop!)
+                started_in_past = []  # Priority 1: Time says started (check frequently, rotated)
+                normal_priority = []  # Priority 2: Future games (check occasionally, rotated)
 
                 for condition_id, market_info in self.sports_markets.items():
-                    # Skip if already ended
-                    if market_info.get('game_metadata', {}).get('ended'):
-                        continue
+                    # Skip if already ended AND finished > 12 hours ago
+                    # We want to keep checking recently ended games for arb opportunities
+                    game_metadata = market_info.get('game_metadata', {})
+                    if game_metadata.get('ended'):
+                        should_skip = False
+                        finished_ts = game_metadata.get('finishedTimestamp')
+                        
+                        if finished_ts:
+                            try:
+                                from dateutil import parser
+                                finished_time = parser.parse(finished_ts).replace(tzinfo=None)
+                                hours_since_finish = (now - finished_time).total_seconds() / 3600
+                                
+                                # specific check: if > 12 hours, we're done with it
+                                if hours_since_finish > 12:
+                                    should_skip = True
+                            except Exception:
+                                # If we can't parse timestamp, don't skip (safety)
+                                pass
+                        
+                        if should_skip:
+                            continue
 
                     market_slug = market_info.get('market_slug')
                     if not market_slug:
                         continue
+                        
+                    # Check if game is actually live per metadata
+                    if game_metadata.get('live'):
+                        actually_live.append((condition_id, market_slug))
+                        continue
 
                     # Check if game has started (using gameStartTime)
                     game_start_time_str = market_info.get('game_start_time', '')
-                    is_high_priority = False
+                    is_started = False
 
                     if game_start_time_str:
                         try:
@@ -439,57 +465,80 @@ class MarketScanner:
                             game_start_time = parser.parse(game_start_time_str).replace(tzinfo=None)
                             time_since_start = (now - game_start_time).total_seconds()
 
-                            # Game started in the past - high priority!
+                            # Game started in the past
                             if time_since_start > 0:
-                                is_high_priority = True
+                                is_started = True
                         except Exception:
                             pass
 
-                    # Also high priority if previously detected as live
-                    if market_info.get('game_metadata', {}).get('live'):
-                        is_high_priority = True
-
-                    if is_high_priority:
-                        high_priority.append((condition_id, market_slug))
+                    if is_started:
+                        started_in_past.append((condition_id, market_slug))
                     else:
                         normal_priority.append((condition_id, market_slug))
 
-                # Combine: high priority first, then normal
-                live_candidates = high_priority + normal_priority
-
-                if not live_candidates:
-                    logger.debug("No live game candidates found")
-                    continue
-
-                # Fetch live status for up to 20 markets per iteration (rate limiting)
-                # High priority markets checked first, normal priority markets are
-                # round-robined so we don't starve markets beyond the first 20.
-                batch_size = 20
+                # Combine: 
+                # 1. All actually_live games (limit to batch_size)
+                # 2. Rotate through started_in_past
+                # 3. Rotate through normal_priority
+                
+                batch_size = 60  # Increased from 20 to 60 (2 req/s) for better coverage
                 candidates_to_check = []
 
-                if high_priority:
-                    candidates_to_check.extend(high_priority[:batch_size])
-
+                # 1. Actually Live (Take ALL up to batch limit)
+                candidates_to_check.extend(actually_live[:batch_size])
+                
                 remaining_slots = batch_size - len(candidates_to_check)
 
+                # 2. Started in Past (Round Robin)
+                if remaining_slots > 0 and started_in_past:
+                    pool = started_in_past
+                    count = len(pool)
+                    offset = self._started_poll_offset
+                    
+                    # Determine how many to take
+                    # We want to prioritize these over normal priority
+                    # But we also want to leave a little room for normal priority if possible? 
+                    # No, started games are much more important for arb. 
+                    # Take as many as possible.
+                    
+                    take_count = min(remaining_slots, count)
+                    
+                    start = offset % count
+                    
+                    batch = pool[start : start + take_count]
+                    
+                    # Wrap around
+                    if len(batch) < take_count:
+                        wrap_needed = take_count - len(batch)
+                        batch.extend(pool[:wrap_needed])
+                        
+                    candidates_to_check.extend(batch)
+                    self._started_poll_offset = (start + take_count) % count
+                    
+                    remaining_slots -= len(batch)
+
+                # 3. Normal Priority (Round Robin)
                 if remaining_slots > 0 and normal_priority:
-                    normal_count = len(normal_priority)
-                    start = self._live_poll_offset % normal_count
+                    pool = normal_priority
+                    count = len(pool)
+                    offset = self._live_poll_offset
+                    
+                    take_count = min(remaining_slots, count)
+                    
+                    start = offset % count
+                    
+                    batch = pool[start : start + take_count]
+                    
+                    # Wrap around
+                    if len(batch) < take_count:
+                        wrap_needed = take_count - len(batch)
+                        batch.extend(pool[:wrap_needed])
+                        
+                    candidates_to_check.extend(batch)
+                    self._live_poll_offset = (start + take_count) % count
 
-                    normal_batch = normal_priority[start:start + remaining_slots]
-
-                    # If we hit the end of the list, wrap around to cover all markets
-                    if len(normal_batch) < remaining_slots and normal_count > len(normal_batch):
-                        wrap_count = remaining_slots - len(normal_batch)
-                        normal_batch.extend(normal_priority[:wrap_count])
-
-                    # Advance offset for next iteration (round-robin)
-                    self._live_poll_offset = (start + len(normal_batch)) % normal_count
-
-                    candidates_to_check.extend(normal_batch)
-
-                logger.debug(f"High priority candidates: {len(high_priority)}, Normal: {len(normal_priority)}, Offset: {self._live_poll_offset}")
-                logger.info(f"Checking {len(candidates_to_check)} markets for live game status (out of {len(live_candidates)} candidates)")
+                logger.debug(f"Live candidates: {len(actually_live)} actual, {len(started_in_past)} started, {len(normal_priority)} normal")
+                logger.info(f"Checking {len(candidates_to_check)} markets for live game status (Live: {len(actually_live)}, Started: {len(started_in_past)})")
 
                 live_count = 0
                 ended_count = 0

@@ -277,9 +277,18 @@ class PostResolutionArbitrage:
         profit_cents = profit * 100
 
         if profit_cents < self.min_profit_cents:
+            logger.info(
+                f"Skipping arb for {market_question[:50]}... "
+                f"Profit {profit_cents:.2f}c < min {self.min_profit_cents}c "
+                f"(Price: ${winning_token_price:.4f})"
+            )
             return None  # Not enough profit
 
         if winning_token_price > self.max_price:
+            logger.info(
+                f"Skipping arb for {market_question[:50]}... "
+                f"Price ${winning_token_price:.4f} > max ${self.max_price:.4f}"
+            )
             return None  # Price too high (low profit margin)
 
         # Calculate position size with proper capital management
