@@ -145,6 +145,9 @@ def update_orders():
 
     if len(all_orders) > 0:
             for token in all_orders['asset_id'].unique():
+                # Fix: Ignore tokens that are not in our selected markets
+                if str(token) not in global_state.all_tokens:
+                    continue
                 
                 if token not in orders:
                     orders[str(token)] = {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
