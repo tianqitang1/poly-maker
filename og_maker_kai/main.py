@@ -19,24 +19,109 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from poly_data.polymarket_client import PolymarketClient
-from poly_data.data_utils import update_markets, update_positions, update_orders
+from poly_data.data_utils import update_positions, update_orders
 from poly_data.websocket_handlers import connect_market_websocket, connect_user_websocket
 import poly_data.global_state as global_state
 from poly_data.data_processing import remove_from_performing
 from poly_utils.logging_utils import get_logger
 from poly_utils.proxy_config import setup_proxy
+from poly_data.utils import get_sheet_df
+import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Initialize logger at module level
+logger = get_logger('og_maker_kai')
+
 # Setup proxy configuration BEFORE initializing any API clients
 setup_proxy(verbose=True)
+
+def update_markets_live():
+    """
+    Fetch and validate markets from Google Sheets.
+    - Validates presence of required columns: question, max_size, trade_size, param_type
+    - Updates global_state.df and global_state.params atomically
+    - Rebuilds global_state.all_tokens preserving tokens with active positions/orders
+    """
+    try:
+        received_df, received_params = get_sheet_df()
+        
+        if len(received_df) == 0:
+            logger.warning("No markets found or empty sheet.")
+            return
+
+        # Validation: Required columns
+        required_cols = ['question', 'max_size', 'trade_size', 'param_type']
+        if not all(col in received_df.columns for col in required_cols):
+            logger.error(f"Missing required columns: {[c for c in required_cols if c not in received_df.columns]}")
+            return
+
+        # Validation: Filter rows with missing values in required columns
+        # Check for NaN and empty strings
+        valid_mask = received_df[required_cols].notna().all(axis=1) & (received_df[required_cols] != "").all(axis=1)
+        valid_df = received_df[valid_mask].copy()
+        
+        if len(valid_df) < len(received_df):
+             logger.info(f"Filtered {len(received_df) - len(valid_df)} invalid rows. Keeping {len(valid_df)} valid markets.")
+
+        if len(valid_df) == 0:
+            logger.warning("No valid markets after filtering.")
+            return
+
+        # Ensure token columns are strings
+        for col in ['token1', 'token2']:
+            valid_df[col] = valid_df[col].astype(str)
+
+        # Update global state atomically
+        global_state.df = valid_df
+        global_state.params = received_params
+
+        # Rebuild all_tokens
+        # We want to keep:
+        # 1. Tokens in the new valid_df (active markets)
+        # 2. Tokens where we have a position (size != 0)
+        # 3. Tokens where we have an active order (size > 0)
+        
+        new_tokens = set()
+        
+        # 1. New tokens from valid markets
+        for _, row in valid_df.iterrows():
+             token1, token2 = str(row['token1']), str(row['token2'])
+             new_tokens.add(token1)
+             new_tokens.add(token2)
+             
+             # Update REVERSE_TOKENS
+             global_state.REVERSE_TOKENS[token1] = token2
+             global_state.REVERSE_TOKENS[token2] = token1
+             
+             # Initialize performing set if needed
+             for col in [f"{token1}_buy", f"{token1}_sell", f"{token2}_buy", f"{token2}_sell"]:
+                if col not in global_state.performing:
+                    global_state.performing[col] = set()
+
+        # 2. Existing positions (preserve monitoring for exits)
+        for token, pos in global_state.positions.items():
+            if pos.get('size', 0) != 0:
+                new_tokens.add(str(token))
+
+        # 3. Existing orders (preserve monitoring for execution)
+        for token, orders in global_state.orders.items():
+            if orders.get('buy', {}).get('size', 0) > 0 or orders.get('sell', {}).get('size', 0) > 0:
+                new_tokens.add(str(token))
+
+        # Update the global token list
+        global_state.all_tokens = list(new_tokens)
+        logger.info(f"Updated active markets. Monitoring {len(global_state.all_tokens)} tokens.")
+
+    except Exception as e:
+        logger.error(f"Error in update_markets_live: {e}", exc_info=True)
 
 def update_once():
     """
     Initialize the application state by fetching market data, positions, and orders.
     """
-    update_markets()    # Get market information from Google Sheets
+    update_markets_live()    # Get market information from Google Sheets
     update_positions()  # Get current positions from Polymarket
     update_orders()     # Get current orders from Polymarket
 
@@ -55,15 +140,13 @@ def remove_from_pending():
                 try:
                     # If trade has been pending for more than 15 seconds, remove it
                     if current_time - global_state.performing_timestamps[col].get(trade_id, current_time) > 15:
-                        print(f"Removing stale entry {trade_id} from {col} after 15 seconds")
+                        logger.info(f"Removing stale entry {trade_id} from {col} after 15 seconds")
                         remove_from_performing(col, trade_id)
-                        print("After removing: ", global_state.performing, global_state.performing_timestamps)
+                        logger.debug(f"After removing: {global_state.performing} {global_state.performing_timestamps}")
                 except:
-                    print("Error in remove_from_pending")
-                    print(traceback.format_exc())
+                    logger.error("Error in remove_from_pending loop", exc_info=True)
     except:
-        print("Error in remove_from_pending")
-        print(traceback.format_exc())
+        logger.error("Error in remove_from_pending", exc_info=True)
 
 def update_periodically():
     """
@@ -86,21 +169,19 @@ def update_periodically():
 
             # Update market data every 6th cycle (30 seconds)
             if i % 6 == 0:
-                update_markets()
+                update_markets_live()
                 i = 1
 
             gc.collect()  # Force garbage collection to free memory
             i += 1
         except:
-            print("Error in update_periodically")
-            print(traceback.format_exc())
+            logger.error("Error in update_periodically", exc_info=True)
 
 async def main():
     """
     Main application entry point. Initializes client, data, and manages websocket connections.
     """
-    # Initialize logger
-    logger = get_logger('og_maker_kai')
+    # Initialize global state logger (already initialized at module level, but setting explicitly for other modules)
     global_state.logger = logger
 
     # Initialize client with OG_MAKER account type
@@ -128,10 +209,9 @@ async def main():
                 connect_market_websocket(global_state.all_tokens),
                 connect_user_websocket()
             )
-            print("Reconnecting to the websocket")
+            logger.info("Reconnecting to the websocket")
         except:
-            print("Error in main loop")
-            print(traceback.format_exc())
+            logger.error("Error in main loop", exc_info=True)
 
         await asyncio.sleep(1)
         gc.collect()  # Clean up memory

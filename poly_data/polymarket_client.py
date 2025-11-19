@@ -131,7 +131,7 @@ class PolymarketClient:
         self.web3 = web3
 
     
-    def create_order(self, marketId, action, price, size, neg_risk=False):
+    def create_order(self, marketId, action, price, size, neg_risk=False, raise_on_error=False):
         """
         Create and submit a new order to the Polymarket order book.
         
@@ -141,6 +141,7 @@ class PolymarketClient:
             price (float): Order price (0-1 range for prediction markets)
             size (float): Order size in USDC
             neg_risk (bool, optional): Whether this is a negative risk market. Defaults to False.
+            raise_on_error (bool, optional): If True, raises exceptions instead of printing and returning empty dict. Defaults to False.
             
         Returns:
             dict: Response from the API containing order details, or empty dict on error
@@ -166,6 +167,8 @@ class PolymarketClient:
             resp = self.client.post_order(signed_order)  # OrderType.GTC is default
             return resp
         except Exception as ex:
+            if raise_on_error:
+                raise ex
             print(ex)
             return {}
 
