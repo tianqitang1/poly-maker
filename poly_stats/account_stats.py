@@ -87,7 +87,7 @@ def get_earnings(client):
         "l2Headers": json.dumps(l2Headers),
         "orderBy": "earnings",
         "position": "DESC",
-        "makerAddress": os.getenv('BROWSER_WALLET'),
+        "makerAddress": os.getenv('BROWSER_ADDRESS'),
         "authenticationType": "eoa",
         "nextCursor": cursor,
         "requestPath": "/rewards/user/markets"
