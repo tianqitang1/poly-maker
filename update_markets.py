@@ -116,6 +116,24 @@ def fetch_and_process_data():
 
     print(f'{pd.to_datetime("now")}: Fetched select market of length {len(new_df)}.')
 
+    # Save to JSON for Dashboard
+    import os
+    import json
+    
+    os.makedirs("dashboard/data", exist_ok=True)
+    
+    # Function to save DF to JSON orient records
+    def save_df(df, name):
+        try:
+            df.to_json(f"dashboard/data/{name}.json", orient="records")
+        except Exception as e:
+            print(f"Error saving {name}: {e}")
+
+    save_df(new_df, "all_markets")
+    save_df(volatility_df, "volatility_markets")
+    save_df(m_data, "full_markets")
+    save_df(sel_df, "selected_markets_snapshot") # Snapshot of what was used
+
     if len(new_df) > 50:
         update_sheet(new_df, wk_all)
         update_sheet(volatility_df, wk_vol)
