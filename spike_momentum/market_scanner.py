@@ -98,6 +98,8 @@ class MarketScanner:
 
         # Compile regex patterns once
         self.keyword_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.SPORTS_KEYWORDS]
+        
+        self._should_reconnect_ws = False
 
         strategies = []
         if spike_detector.enabled:
@@ -109,7 +111,7 @@ class MarketScanner:
 
     def fetch_sports_markets(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        Fetch sports markets from Polymarket.
+        Fetch sports markets from Polymarket and update internal state.
 
         Args:
             limit: Maximum markets to return (None = no limit, return all)
@@ -117,22 +119,40 @@ class MarketScanner:
         Returns:
             List of market dictionaries
         """
+        new_sports_markets, new_market_questions, markets_to_store = self._fetch_sports_markets_data(limit)
+        
+        # Update state
+        self.sports_markets = new_sports_markets
+        self.market_questions = new_market_questions
+        
+        logger.info(f"Stored {len(self.sports_markets)} sports markets")
+        return markets_to_store
+
+    def _fetch_sports_markets_data(self, limit: Optional[int] = None) -> tuple[Dict[str, Any], Dict[str, str], List[Dict[str, Any]]]:
+        """
+        Internal method to fetch sports markets without updating state.
+        Returns (sports_markets_dict, market_questions_dict, list_of_markets).
+        """
         logger.info("Fetching markets from Polymarket...")
+
+        new_sports_markets = {}
+        new_market_questions = {}
+        markets_to_store = []
 
         try:
             # Try to fetch with tag filtering first (if API supports it)
             # This is much more efficient than fetching all markets
-            sports_markets = self._fetch_markets_by_tags()
+            sports_markets_list = self._fetch_markets_by_tags()
 
-            if sports_markets:
-                logger.info(f"Fetched {len(sports_markets)} markets using tag filtering")
+            if sports_markets_list:
+                logger.info(f"Fetched {len(sports_markets_list)} markets using tag filtering")
             else:
                 # Fallback: fetch all and filter manually
                 logger.info("Tag filtering not available, fetching all markets...")
-                sports_markets = self._fetch_all_markets_and_filter(limit)
+                sports_markets_list = self._fetch_all_markets_and_filter(limit)
 
             # Apply limit if specified
-            markets_to_store = sports_markets if limit is None else sports_markets[:limit]
+            markets_to_store = sports_markets_list if limit is None else sports_markets_list[:limit]
 
             # Store market info
             for market in markets_to_store:
@@ -175,7 +195,7 @@ class MarketScanner:
                             logger.info(f"   Market: {question[:80]}")
                             logger.info(f"   Event data: {json.dumps(event, indent=2)}")
 
-                    self.sports_markets[condition_id] = {
+                    new_sports_markets[condition_id] = {
                         'condition_id': condition_id,
                         'question': question,
                         'yes_token': yes_token,
@@ -187,16 +207,15 @@ class MarketScanner:
                         'game_metadata': game_metadata,  # Real-time game status!
                     }
 
-                    self.market_questions[condition_id] = question
+                    new_market_questions[condition_id] = question
 
-            logger.info(f"Stored {len(self.sports_markets)} sports markets")
-            return markets_to_store
+            return new_sports_markets, new_market_questions, markets_to_store
 
         except Exception as e:
             logger.error(f"Error fetching sports markets: {e}")
             import traceback
             traceback.print_exc()
-            return []
+            return {}, {}, []
 
     def _fetch_markets_by_tags(self) -> List[Dict[str, Any]]:
         """Try to fetch markets using tag/category filtering."""
@@ -627,6 +646,55 @@ class MarketScanner:
                 import traceback
                 traceback.print_exc()
 
+    async def _refresh_markets_loop(self):
+        """
+        Background task to periodically refresh the full market list.
+        Runs every 60 minutes to pick up new games and remove old ones.
+        """
+        logger.info("Starting market refresh loop (60min interval)...")
+        
+        while True:
+            try:
+                # Wait 60 minutes
+                await asyncio.sleep(3600)
+                
+                logger.info("🔄 REFRESHING MARKET LIST...")
+                
+                # Fetch new data (without updating state yet)
+                new_sports_markets, new_market_questions, _ = self._fetch_sports_markets_data(limit=None)
+                
+                if not new_sports_markets:
+                    logger.warning("Market refresh failed or returned no markets. Keeping old state.")
+                    continue
+                    
+                # MERGE STATE: Preserve game_metadata from old state for continuity
+                # This ensures we don't lose track of 'live' status during the swap
+                preserved_count = 0
+                for condition_id, new_info in new_sports_markets.items():
+                    if condition_id in self.sports_markets:
+                        old_info = self.sports_markets[condition_id]
+                        # If old info has live game metadata, copy it over
+                        old_meta = old_info.get('game_metadata', {})
+                        if old_meta and (old_meta.get('live') or old_meta.get('ended')):
+                            new_info['game_metadata'] = old_meta
+                            preserved_count += 1
+                            
+                logger.info(f"Preserved game metadata for {preserved_count} markets")
+                
+                # ATOMIC SWAP
+                self.sports_markets = new_sports_markets
+                self.market_questions = new_market_questions
+                
+                logger.info(f"✓ Market list refreshed: {len(self.sports_markets)} active markets")
+                
+                # Trigger WebSocket reconnect to subscribe to new tokens
+                self._should_reconnect_ws = True
+                
+            except Exception as e:
+                logger.error(f"Error in market refresh loop: {e}")
+                import traceback
+                traceback.print_exc()
+
     async def monitor_markets(self):
         """
         Monitor markets via WebSocket and detect spikes.
@@ -636,9 +704,10 @@ class MarketScanner:
         logger.info("Starting market monitoring...")
 
         # Fetch all sports markets (no limit - monitor everything we find)
-        sports_markets = self.fetch_sports_markets(limit=None)
+        # Initial load
+        self.fetch_sports_markets(limit=None)
 
-        if not sports_markets:
+        if not self.sports_markets:
             logger.error("No sports markets found to monitor")
             return
 
@@ -658,6 +727,10 @@ class MarketScanner:
         # Start background task for live game updates
         live_game_task = asyncio.create_task(self._update_live_games_loop())
         logger.info("Started live game status monitoring")
+        
+        # Start background task for market list refresh
+        refresh_task = asyncio.create_task(self._refresh_markets_loop())
+        logger.info("Started background market list refresh loop")
 
         # Reconnection loop with exponential backoff
         reconnect_delay = 1  # Start with 1 second
@@ -665,7 +738,13 @@ class MarketScanner:
 
         while True:
             try:
-                await self._connect_and_monitor(token_ids)
+                # Reset flag before connecting
+                self._should_reconnect_ws = False
+                
+                # Refresh token IDs in case market list changed
+                current_token_ids = self.get_token_ids()
+                
+                await self._connect_and_monitor(current_token_ids)
                 # If we get here, connection closed gracefully - reset delay
                 reconnect_delay = 1
 
@@ -695,6 +774,11 @@ class MarketScanner:
 
             # Process incoming messages
             while True:
+                # Check if we need to force reconnect (e.g. due to market refresh)
+                if self._should_reconnect_ws:
+                    logger.info("Forcing WebSocket reconnect due to market list refresh...")
+                    return
+
                 try:
                     message = await websocket.recv()
                     json_data = json.loads(message)
