@@ -64,6 +64,11 @@ class PolymarketClient:
             browser_address = os.getenv("NEG_RISK_ARB_BROWSER_ADDRESS")
             print("Initializing Polymarket client for NEG-RISK-ARB account...")
             env_prefix = "NEG_RISK_ARB_"
+        elif account_type == 'og_maker':
+            key = os.getenv("OG_MAKER_PK")
+            browser_address = os.getenv("OG_MAKER_BROWSER_ADDRESS")
+            print("Initializing Polymarket client for OG-MAKER account...")
+            env_prefix = "OG_MAKER_"
         else:  # default
             key = os.getenv("PK")
             browser_address = os.getenv("BROWSER_ADDRESS")

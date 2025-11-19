@@ -140,37 +140,65 @@ def set_position(token, side, size, price, source='websocket'):
 
 def update_orders():
     all_orders = global_state.client.get_all_orders()
+    print(f"DEBUG: API returned {len(all_orders)} total orders")
 
-    orders = {}
+    # Create new orders dict starting with what we find in the API
+    api_orders = {}
 
     if len(all_orders) > 0:
-            for token in all_orders['asset_id'].unique():
-                # Fix: Ignore tokens that are not in our selected markets
-                if str(token) not in global_state.all_tokens:
-                    continue
-                
-                if token not in orders:
-                    orders[str(token)] = {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
+        # Ensure asset_id is string for consistent filtering
+        all_orders['asset_id'] = all_orders['asset_id'].astype(str)
 
-                curr_orders = all_orders[all_orders['asset_id'] == str(token)]
-                
-                if len(curr_orders) > 0:
-                    sel_orders = {}
-                    sel_orders['buy'] = curr_orders[curr_orders['side'] == 'BUY']
-                    sel_orders['sell'] = curr_orders[curr_orders['side'] == 'SELL']
+        for token in all_orders['asset_id'].unique():
+            # Fix: Ignore tokens that are not in our selected markets
+            if str(token) not in global_state.all_tokens:
+                continue
+            
+            token_str = str(token)
+            if token_str not in api_orders:
+                api_orders[token_str] = {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
 
-                    for type in ['buy', 'sell']:
-                        curr = sel_orders[type]
+            curr_orders = all_orders[all_orders['asset_id'] == token_str]
+            
+            if len(curr_orders) > 0:
+                sel_orders = {}
+                sel_orders['buy'] = curr_orders[curr_orders['side'] == 'BUY']
+                sel_orders['sell'] = curr_orders[curr_orders['side'] == 'SELL']
 
-                        if len(curr) > 1:
-                            print("Multiple orders found, cancelling")
-                            global_state.client.cancel_all_asset(token)
-                            orders[str(token)] = {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
-                        elif len(curr) == 1:
-                            orders[str(token)][type]['price'] = float(curr.iloc[0]['price'])
-                            orders[str(token)][type]['size'] = float(curr.iloc[0]['original_size'] - curr.iloc[0]['size_matched'])
+                for type in ['buy', 'sell']:
+                    curr = sel_orders[type]
 
-    global_state.orders = orders
+                    if len(curr) > 1:
+                        print(f"DEBUG: Found {len(curr)} {type} orders for {token}. Cancelling all.")
+                        print(f"Multiple {type} orders found for {token}, cancelling")
+                        global_state.client.cancel_all_asset(token)
+                        api_orders[token_str][type] = {'price': 0, 'size': 0}
+                    elif len(curr) == 1:
+                        api_orders[token_str][type]['price'] = float(curr.iloc[0]['price'])
+                        api_orders[token_str][type]['size'] = float(curr.iloc[0]['original_size'] - curr.iloc[0]['size_matched'])
+
+    # Now merge with global_state.orders to preserve recently updated orders (grace period)
+    current_time = time.time()
+    merged_orders = api_orders.copy()
+
+    # Check for orders we know about locally but API missed
+    for token, sides in global_state.orders.items():
+        token = str(token)
+        if token not in merged_orders:
+            merged_orders[token] = {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
+        
+        for side in ['buy', 'sell']:
+            local_side = sides.get(side, {})
+            # If we have a local order with a recent timestamp
+            if local_side.get('size', 0) > 0 and 'last_update' in local_side:
+                # If updated within last 10 seconds
+                if current_time - local_side['last_update'] < 10:
+                    # If API shows no order, but we have a recent one, KEEP LOCAL
+                    if merged_orders[token][side]['size'] == 0:
+                        merged_orders[token][side] = local_side
+                        # print(f"Preserving recent local {side} order for {token} (API missed it)")
+    
+    global_state.orders = merged_orders
 
 def get_order(token):
     token = str(token)
@@ -187,14 +215,19 @@ def get_order(token):
         return {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
     
 def set_order(token, side, size, price):
-    curr = {}
-    curr = {side: {'price': 0, 'size': 0}}
+    token = str(token)
+    side = side.lower()
 
-    curr[side]['size'] = float(size)
-    curr[side]['price'] = float(price)
+    # Ensure the token exists in the orders dict, creating it if it doesn't
+    if token not in global_state.orders:
+        global_state.orders[token] = {'buy': {'price': 0, 'size': 0}, 'sell': {'price': 0, 'size': 0}}
+    
+    # Update the specific side of the order with timestamp
+    global_state.orders[token][side]['size'] = float(size)
+    global_state.orders[token][side]['price'] = float(price)
+    global_state.orders[token][side]['last_update'] = time.time()
 
-    global_state.orders[str(token)] = curr
-    print("Updated order, set to ", curr)
+    print(f"Updated order for token {token}, state is now: ", global_state.orders[token])
 
     
 
@@ -211,6 +244,9 @@ def update_markets():
 
         if row['token1'] not in global_state.all_tokens:
             global_state.all_tokens.append(row['token1'])
+        
+        if row['token2'] not in global_state.all_tokens:
+            global_state.all_tokens.append(row['token2'])
 
         if row['token1'] not in global_state.REVERSE_TOKENS:
             global_state.REVERSE_TOKENS[row['token1']] = row['token2']

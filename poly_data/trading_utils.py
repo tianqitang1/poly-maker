@@ -99,7 +99,7 @@ def find_best_price_with_size(price_dict, min_size, reverse=False):
             second_best_price, second_best_size = price, size
             break
 
-        if size > min_size:
+        if size >= min_size:
             if best_price is None:
                 best_price, best_size = price, size
                 set_best = True

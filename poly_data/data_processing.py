@@ -152,8 +152,15 @@ def process_user_data(rows):
 
             elif row['event_type'] == 'order':
                 print("ORDER EVENT FOR: ", row['market'], " STATUS: ",  row['status'], " TYPE: ", row['type'], " SIDE: ", side, "  ORIGINAL SIZE: ", row['original_size'], " SIZE MATCHED: ", row['size_matched'])
-
-                set_order(token, side, float(row['original_size']) - float(row['size_matched']), row['price'])
+                
+                if row['status'] == 'CANCELED':
+                    # If cancelled, we have 0 open size
+                    print(f"Order cancelled. Reason (if any): {row.get('reason', 'Unknown')}")
+                    set_order(token, side, 0, 0)
+                else:
+                    # For LIVE, PLACED, etc.
+                    set_order(token, side, float(row['original_size']) - float(row['size_matched']), row['price'])
+                
                 asyncio.create_task(perform_trade(market))
         else:
             print(f"User data received for {token} in market {market} but token not in REVERSE_TOKENS")

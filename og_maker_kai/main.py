@@ -13,8 +13,9 @@ import os
 import sys
 
 # Add parent directory to path to import shared modules
-# Insert at index 1 to keep current directory at index 0
-# This ensures 'import trading' picks up the local trading.py, not the one in parent
+# Insert current directory at 0 to ensure local trading.py is preferred over root's
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Insert parent directory at 1 to allow importing poly_data
 sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from poly_data.polymarket_client import PolymarketClient
@@ -102,19 +103,9 @@ async def main():
     logger = get_logger('og_maker_kai')
     global_state.logger = logger
 
-    # Initialize client with OG_MAKER credentials
-    pk = os.getenv('OG_MAKER_PK')
-    browser_address = os.getenv('OG_MAKER_BROWSER_ADDRESS')
-
-    if not pk or not browser_address:
-        logger.error("Missing OG_MAKER_PK or OG_MAKER_BROWSER_ADDRESS environment variables!")
-        print("\nERROR: Missing OG_MAKER_PK or OG_MAKER_BROWSER_ADDRESS environment variables!")
-        print("Please add these to your .env file:")
-        print("OG_MAKER_PK=your_private_key_here")
-        print("OG_MAKER_BROWSER_ADDRESS=your_wallet_address_here")
-        return
-
-    global_state.client = PolymarketClient(private_key=pk, browser_address=browser_address)
+    # Initialize client with OG_MAKER account type
+    # The PolymarketClient will handle loading the correct credentials from .env
+    global_state.client = PolymarketClient(account_type='og_maker')
 
     # Initialize state and fetch initial data
     global_state.all_tokens = []

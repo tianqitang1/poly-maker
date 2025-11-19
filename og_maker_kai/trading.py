@@ -53,7 +53,7 @@ def send_buy_order(order):
         existing_buy_size == 0  # Cancel if no existing buy order
     )
 
-    if should_cancel and (existing_buy_size > 0 or order['orders']['sell']['size'] > 0):
+    if should_cancel:
         print(f"Cancelling buy orders - price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         client.cancel_all_asset(order['token'])
     elif not should_cancel:
@@ -72,15 +72,22 @@ def send_buy_order(order):
     if trade:
         # Only place orders with prices between 0.1 and 0.9 to avoid extreme positions
         if order['price'] >= 0.1 and order['price'] < 0.9:
-            print(f'Creating new order for {order["size"]} at {order["price"]}')
-            print(order['token'], 'BUY', order['price'], order['size'])
-            client.create_order(
-                order['token'],
-                'BUY',
-                order['price'],
-                order['size'],
-                True if order['neg_risk'] == 'TRUE' else False
-            )
+            try:
+                client.create_order(
+                    order['token'],
+                    'BUY',
+                    order['price'],
+                    order['size'],
+                    True if order['neg_risk'] == 'TRUE' else False
+                )
+            except Exception as ex:
+                # Check if this is a balance/allowance error (not enough funds)
+                error_msg = str(ex).lower()
+                if 'balance' in error_msg or 'allowance' in error_msg:
+                    print("WARNING: Buy order failed with balance/allowance error - not enough capital")
+                else:
+                    # Re-raise if it's a different error
+                    raise
         else:
             print("Not creating buy order because its outside acceptable price range (0.1-0.9)")
     else:
@@ -114,21 +121,41 @@ def send_sell_order(order):
         existing_sell_size == 0  # Cancel if no existing sell order
     )
 
-    if should_cancel and (existing_sell_size > 0 or order['orders']['buy']['size'] > 0):
+    if should_cancel:
         print(f"Cancelling sell orders - price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         client.cancel_all_asset(order['token'])
     elif not should_cancel:
         print(f"Keeping existing sell orders - minor changes: price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         return  # Don't place new order if existing one is fine
 
-    print(f'Creating new order for {order["size"]} at {order["price"]}')
-    client.create_order(
-        order['token'],
-        'SELL',
-        order['price'],
-        order['size'],
-        True if order['neg_risk'] == 'TRUE' else False
-    )
+    try:
+        client.create_order(
+            order['token'],
+            'SELL',
+            order['price'],
+            order['size'],
+            True if order['neg_risk'] == 'TRUE' else False
+        )
+    except Exception as ex:
+        # Check if this is a balance/allowance error (position already sold)
+        error_msg = str(ex).lower()
+        if 'balance' in error_msg or 'allowance' in error_msg:
+            print(f"WARNING: Sell order failed with balance/allowance error. Refreshing position for token {order['token']}")
+            # Force update the actual position from blockchain
+            from poly_data.data_utils import get_position, set_position
+            try:
+                actual_position = client.get_position(order['token'])[0] / 10**6
+                current_avg = get_position(order['token'])['avgPrice']
+                print(f"  Cached position was {order['size']}, actual on-chain position is {actual_position}")
+                # Update our cached position to match reality
+                if actual_position != order['size']:
+                    set_position(order['token'], 'SELL', order['size'] - actual_position, current_avg, 'correction')
+                    print(f"  Updated cached position to {actual_position}")
+            except Exception as refresh_ex:
+                print(f"  Error refreshing position: {refresh_ex}")
+        else:
+            # Re-raise if it's a different error
+            raise
 
 # Dictionary to store locks for each market to prevent concurrent trading on the same market
 market_locks = {}
@@ -221,9 +248,30 @@ async def perform_trade(market):
                 second_best_ask_size = deets['second_best_ask_size']
                 top_ask = deets['top_ask']
 
+                # Patch book with our local orders to prevent race conditions/lag
+                my_buy_price = orders['buy']['price']
+                my_buy_size = orders['buy']['size']
+                if my_buy_size > 0:
+                    if best_bid is None or my_buy_price >= best_bid:
+                         best_bid = my_buy_price
+                         best_bid_size = my_buy_size 
+                    if top_bid is None or my_buy_price > top_bid:
+                             top_bid = my_buy_price
+
+                my_sell_price = orders['sell']['price']
+                my_sell_size = orders['sell']['size']
+                if my_sell_size > 0:
+                    if best_ask is None or my_sell_price <= best_ask:
+                         best_ask = my_sell_price
+                         best_ask_size = my_sell_size
+                    if top_ask is None or my_sell_price < top_ask:
+                             top_ask = my_sell_price
+
                 # Round prices to appropriate precision
-                best_bid = round(best_bid, round_length)
-                best_ask = round(best_ask, round_length)
+                if best_bid is not None: best_bid = round(best_bid, round_length)
+                if best_ask is not None: best_ask = round(best_ask, round_length)
+                if top_bid is not None: top_bid = round(top_bid, round_length)
+                if top_ask is not None: top_ask = round(top_ask, round_length)
 
                 # Calculate ratio of buy vs sell liquidity in the market
                 try:

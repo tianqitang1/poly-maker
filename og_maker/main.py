@@ -98,19 +98,9 @@ async def main():
     logger = get_logger('og_maker')
     global_state.logger = logger
 
-    # Initialize client with OG_MAKER credentials
-    pk = os.getenv('OG_MAKER_PK')
-    browser_address = os.getenv('OG_MAKER_BROWSER_ADDRESS')
-
-    if not pk or not browser_address:
-        logger.error("Missing OG_MAKER_PK or OG_MAKER_BROWSER_ADDRESS environment variables!")
-        print("\nERROR: Missing OG_MAKER_PK or OG_MAKER_BROWSER_ADDRESS environment variables!")
-        print("Please add these to your .env file:")
-        print("OG_MAKER_PK=your_private_key_here")
-        print("OG_MAKER_BROWSER_ADDRESS=your_wallet_address_here")
-        return
-
-    global_state.client = PolymarketClient(private_key=pk, browser_address=browser_address)
+    # Initialize client with OG_MAKER account type
+    # The PolymarketClient will handle loading the correct credentials from .env
+    global_state.client = PolymarketClient(account_type='og_maker')
 
     # Initialize state and fetch initial data
     global_state.all_tokens = []
