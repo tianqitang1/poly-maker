@@ -31,16 +31,19 @@ def get_all_orders(client):
         orders_df = orders_df.rename(columns={'side': 'order_side', 'price': 'order_price'})
         return orders_df
     else:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['asset_id', 'order_size', 'order_side', 'order_price'])
     
 def get_all_positions(client):
     try:
         positions = client.get_all_positions()
+        if positions.empty:
+             return pd.DataFrame(columns=['asset', 'position_size', 'avgPrice', 'curPrice', 'percentPnl'])
+             
         positions = positions[['asset', 'size', 'avgPrice', 'curPrice', 'percentPnl']]
         positions = positions.rename(columns={'size': 'position_size'})
         return positions
     except:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['asset', 'position_size', 'avgPrice', 'curPrice', 'percentPnl'])
     
 def combine_dfs(orders_df, positions, markets_df, selected_df):
     merged_df = orders_df.merge(positions, left_on=['asset_id'], right_on=['asset'], how='outer')
@@ -131,6 +134,13 @@ def update_stats_once(client):
         combined_df = combined_df.sort_values('earnings', ascending=False)
         combined_df = combined_df[['question', 'answer', 'order_size', 'position_size', 'marketInSelected', 'earnings', 'earning_percentage']]
         wk_summary.clear()
+
+        # Save to JSON for Dashboard
+        try:
+            os.makedirs("dashboard/data", exist_ok=True)
+            combined_df.to_json("dashboard/data/stats.json", orient="records")
+        except Exception as e:
+            print(f"Error saving stats to JSON: {e}")
 
         set_with_dataframe(wk_summary, combined_df, include_index=False, include_column_header=True, resize=True)
     else:

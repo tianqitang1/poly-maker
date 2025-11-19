@@ -29,6 +29,8 @@ dependencies = [
     "feedparser>=6.0.10",
     "openai>=2.8.0",
     "python-dateutil>=2.8.2",
+    "fastapi>=0.121.2",
+    "uvicorn>=0.38.0",
 ]
 
 [project.optional-dependencies]
