@@ -109,7 +109,7 @@ class MarketScanner:
 
         logger.info(f"Initialized MarketScanner with strategies: {strategies}")
 
-    def fetch_sports_markets(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def fetch_sports_markets(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Fetch sports markets from Polymarket and update internal state.
 
@@ -119,7 +119,7 @@ class MarketScanner:
         Returns:
             List of market dictionaries
         """
-        new_sports_markets, new_market_questions, markets_to_store = self._fetch_sports_markets_data(limit)
+        new_sports_markets, new_market_questions, markets_to_store = await self._fetch_sports_markets_data(limit)
         
         # Update state
         self.sports_markets = new_sports_markets
@@ -128,7 +128,82 @@ class MarketScanner:
         logger.info(f"Stored {len(self.sports_markets)} sports markets")
         return markets_to_store
 
-    def _fetch_sports_markets_data(self, limit: Optional[int] = None) -> tuple[Dict[str, Any], Dict[str, str], List[Dict[str, Any]]]:
+    async def _fetch_markets_from_gamma(self) -> List[Dict[str, Any]]:
+        """
+        Fetch markets directly from Gamma API using sports tags.
+        This is more reliable for discovery than CLOB pagination.
+        """
+        logger.info("Fetching sports markets from Gamma API...")
+        
+        sports_tags = ['nba', 'nfl', 'mlb', 'nhl', 'soccer', 'football', 'basketball', 'sports']
+        found_markets = {} # Dedup by condition_id
+        
+        async with aiohttp.ClientSession() as session:
+            for tag in sports_tags:
+                try:
+                    # Fetch events for this tag
+                    url = f"https://gamma-api.polymarket.com/events?limit=50&active=true&closed=false&tag_slug={tag}"
+                    async with session.get(url) as response:
+                        if response.status != 200:
+                            continue
+                            
+                        events = await response.json()
+                        if not isinstance(events, list):
+                            continue
+                            
+                        for event in events:
+                            markets = event.get('markets', [])
+                            for market in markets:
+                                # Filter for moneyline sports markets
+                                # Gamma markets have 'sportsMarketType'
+                                if market.get('sportsMarketType') != 'moneyline':
+                                    continue
+                                    
+                                # Extract needed fields to match CLOB format
+                                condition_id = market.get('conditionId')
+                                if not condition_id or condition_id in found_markets:
+                                    continue
+                                    
+                                # Construct market dict
+                                found_markets[condition_id] = {
+                                    'condition_id': condition_id,
+                                    'question': market.get('question'),
+                                    'market_slug': market.get('slug'),
+                                    'category': 'Sports', # Assumed from tag
+                                    'end_date_iso': market.get('endDate'),
+                                    'gameStartTime': market.get('gameStartTime'),
+                                    'rewards': {'min_size': 0, 'max_spread': 0, 'rates': []}, # Defaults
+                                    'tokens': json.loads(market.get('outcomes', '[]')), # Outcomes only, tokens needed?
+                                    # Gamma doesn't give token IDs directly in the simple list sometimes
+                                    # We need clobTokenIds
+                                    'clobTokenIds': json.loads(market.get('clobTokenIds', '[]')),
+                                    'events': [event], # Attach full event for metadata extraction
+                                    'sportsMarketType': 'moneyline'
+                                }
+                                
+                except Exception as e:
+                    logger.debug(f"Error fetching Gamma tag {tag}: {e}")
+                    
+        # Convert to list and normalize
+        results = []
+        for m in found_markets.values():
+            # Normalize token IDs from clobTokenIds
+            clob_ids = m.pop('clobTokenIds', [])
+            outcomes = m.pop('tokens', [])
+            
+            tokens = []
+            if len(clob_ids) >= 2 and len(outcomes) >= 2:
+                tokens = [
+                    {'token_id': clob_ids[0], 'outcome': outcomes[0]},
+                    {'token_id': clob_ids[1], 'outcome': outcomes[1]}
+                ]
+            m['tokens'] = tokens
+            results.append(m)
+            
+        logger.info(f"Gamma fetch found {len(results)} unique sports markets")
+        return results
+
+    async def _fetch_sports_markets_data(self, limit: Optional[int] = None) -> tuple[Dict[str, Any], Dict[str, str], List[Dict[str, Any]]]:
         """
         Internal method to fetch sports markets without updating state.
         Returns (sports_markets_dict, market_questions_dict, list_of_markets).
@@ -140,31 +215,52 @@ class MarketScanner:
         markets_to_store = []
 
         try:
-            # Try to fetch with tag filtering first (if API supports it)
-            # This is much more efficient than fetching all markets
-            sports_markets_list = self._fetch_markets_by_tags()
+            # PRIORITY 1: Fetch from Gamma API (New, reliable method)
+            try:
+                sports_markets_list = await self._fetch_markets_from_gamma()
+            except Exception as e:
+                logger.error(f"Gamma fetch failed: {e}")
+                sports_markets_list = []
 
-            if sports_markets_list:
-                logger.info(f"Fetched {len(sports_markets_list)} markets using tag filtering")
-            else:
-                # Fallback: fetch all and filter manually
-                logger.info("Tag filtering not available, fetching all markets...")
-                sports_markets_list = self._fetch_all_markets_and_filter(limit)
+            if not sports_markets_list:
+                # PRIORITY 2: Try tag filtering on CLOB (Legacy)
+                sports_markets_list = self._fetch_markets_by_tags()
+
+                if sports_markets_list:
+                    logger.info(f"Fetched {len(sports_markets_list)} markets using tag filtering")
+                else:
+                    # PRIORITY 3: Fallback to all markets (Slow, error-prone)
+                    logger.info("Tag filtering not available, fetching all markets...")
+                    sports_markets_list = self._fetch_all_markets_and_filter(limit)
 
             # Apply limit if specified
             markets_to_store = sports_markets_list if limit is None else sports_markets_list[:limit]
 
             # Store market info
             for market in markets_to_store:
-                condition_id = market.get('condition_id', '')
+                condition_id = market.get('condition_id') or market.get('conditionId')
+                if not condition_id: 
+                    continue
+                    
                 question = market.get('question', '')
 
                 # Get tokens for this market
                 tokens = market.get('tokens', [])
+                yes_token = ""
+                no_token = ""
+                
                 if len(tokens) >= 2:
                     yes_token = tokens[0].get('token_id', '')
                     no_token = tokens[1].get('token_id', '')
+                elif market.get('clobTokenIds'):
+                     # Handle raw format from Gamma if tokens struct wasn't built perfectly
+                     cids = market.get('clobTokenIds')
+                     if isinstance(cids, str): cids = json.loads(cids)
+                     if len(cids) >= 2:
+                         yes_token = cids[0]
+                         no_token = cids[1]
 
+                if yes_token and no_token:
                     # Slug used for live-game polling endpoint; fall back through common keys
                     market_slug = (
                         market.get('market_slug')
@@ -202,8 +298,8 @@ class MarketScanner:
                         'no_token': no_token,
                         'market_slug': market_slug,
                         'category': market.get('category', ''),
-                        'end_date': market.get('end_date_iso', ''),
-                        'game_start_time': market.get('gameStartTime', ''),  # When game actually starts
+                        'end_date': market.get('end_date_iso') or market.get('endDate'),
+                        'game_start_time': market.get('gameStartTime') or game_metadata.get('startTime'),
                         'game_metadata': game_metadata,  # Real-time game status!
                     }
 
@@ -346,10 +442,59 @@ class MarketScanner:
         return False
 
     def get_token_ids(self) -> List[str]:
-        """Get list of token IDs to subscribe to."""
+        """
+        Get list of token IDs to subscribe to.
+        Filters to stay within WebSocket limit (500 assets).
+        Prioritizes: Live/Ended > Recent > Upcoming
+        """
         token_ids = []
-
-        for market_info in self.sports_markets.values():
+        
+        # Prioritize markets
+        priority_markets = []
+        now = datetime.utcnow()
+        
+        for condition_id, info in self.sports_markets.items():
+            # Score matches based on priority
+            score = 0
+            
+            # 1. Live/Ended (Highest Priority)
+            meta = info.get('game_metadata', {})
+            if meta.get('live'): score = 1000
+            elif meta.get('ended'): score = 900
+            
+            # 2. Time-based
+            start_str = info.get('game_start_time')
+            if start_str:
+                try:
+                    from dateutil import parser
+                    start_dt = parser.parse(start_str).replace(tzinfo=None)
+                    diff = (start_dt - now).total_seconds()
+                    
+                    # Started within last 24h
+                    if -24*3600 < diff <= 0: 
+                        score = max(score, 800)
+                    # Starts in next 24h
+                    elif 0 < diff < 24*3600:
+                        score = max(score, 700)
+                    # Starts in next 3 days
+                    elif 24*3600 <= diff < 72*3600:
+                        score = max(score, 600)
+                    # Older or further out
+                    else:
+                        score = max(score, 100)
+                        
+                except:
+                    pass
+            
+            priority_markets.append((score, info))
+            
+        # Sort by score descending
+        priority_markets.sort(key=lambda x: x[0], reverse=True)
+        
+        # Take top 240 markets (480 tokens) to stay under 500 limit
+        selected = priority_markets[:240]
+        
+        for score, market_info in selected:
             yes_token = market_info.get('yes_token')
             no_token = market_info.get('no_token')
 
@@ -358,7 +503,7 @@ class MarketScanner:
             if no_token:
                 token_ids.append(no_token)
 
-        logger.info(f"Generated {len(token_ids)} token IDs to monitor")
+        logger.info(f"Generated {len(token_ids)} token IDs to monitor (filtered from {len(self.sports_markets)} markets)")
         return token_ids
 
     async def _fetch_live_game_status(self, market_slug: str) -> Optional[Dict[str, Any]]:
@@ -438,8 +583,9 @@ class MarketScanner:
 
                 # Build prioritized list of candidates
                 actually_live = []    # Priority 0: Metadata says LIVE (check every loop!)
-                started_in_past = []  # Priority 1: Time says started (check frequently, rotated)
-                normal_priority = []  # Priority 2: Future games (check occasionally, rotated)
+                recent_starts = []    # Priority 1: Started < 6h ago (likely live/just finished)
+                old_starts = []       # Priority 2: Started > 6h ago (check for late resolution)
+                normal_priority = []  # Priority 3: Future games (check occasionally, rotated)
 
                 for condition_id, market_info in self.sports_markets.items():
                     # Skip if already ended AND finished > 12 hours ago
@@ -476,6 +622,7 @@ class MarketScanner:
 
                     # Check if game has started (using gameStartTime)
                     game_start_time_str = market_info.get('game_start_time', '')
+                    time_since_start = 0
                     is_started = False
 
                     if game_start_time_str:
@@ -491,16 +638,21 @@ class MarketScanner:
                             pass
 
                     if is_started:
-                        started_in_past.append((condition_id, market_slug))
+                        # Prioritize recent starts (within 6 hours)
+                        if time_since_start < 6 * 3600:
+                            recent_starts.append((condition_id, market_slug))
+                        else:
+                            old_starts.append((condition_id, market_slug))
                     else:
                         normal_priority.append((condition_id, market_slug))
 
                 # Combine: 
                 # 1. All actually_live games (limit to batch_size)
-                # 2. Rotate through started_in_past
-                # 3. Rotate through normal_priority
+                # 2. recent_starts (High priority!)
+                # 3. old_starts (Round Robin)
+                # 4. normal_priority (Round Robin)
                 
-                batch_size = 60  # Increased from 20 to 60 (2 req/s) for better coverage
+                batch_size = 80  # Increased to 80 (~2.6 req/s) for better coverage
                 candidates_to_check = []
 
                 # 1. Actually Live (Take ALL up to batch limit)
@@ -508,22 +660,21 @@ class MarketScanner:
                 
                 remaining_slots = batch_size - len(candidates_to_check)
 
-                # 2. Started in Past (Round Robin)
-                if remaining_slots > 0 and started_in_past:
-                    pool = started_in_past
+                # 2. Recent Starts (Take ALL up to remaining slots)
+                # These are critical - likely the "ongoing games" user is missing
+                if remaining_slots > 0 and recent_starts:
+                    take = recent_starts[:remaining_slots]
+                    candidates_to_check.extend(take)
+                    remaining_slots -= len(take)
+
+                # 3. Old Starts (Round Robin)
+                if remaining_slots > 0 and old_starts:
+                    pool = old_starts
                     count = len(pool)
                     offset = self._started_poll_offset
                     
-                    # Determine how many to take
-                    # We want to prioritize these over normal priority
-                    # But we also want to leave a little room for normal priority if possible? 
-                    # No, started games are much more important for arb. 
-                    # Take as many as possible.
-                    
                     take_count = min(remaining_slots, count)
-                    
                     start = offset % count
-                    
                     batch = pool[start : start + take_count]
                     
                     # Wrap around
@@ -533,19 +684,16 @@ class MarketScanner:
                         
                     candidates_to_check.extend(batch)
                     self._started_poll_offset = (start + take_count) % count
-                    
                     remaining_slots -= len(batch)
 
-                # 3. Normal Priority (Round Robin)
+                # 4. Normal Priority (Round Robin)
                 if remaining_slots > 0 and normal_priority:
                     pool = normal_priority
                     count = len(pool)
                     offset = self._live_poll_offset
                     
                     take_count = min(remaining_slots, count)
-                    
                     start = offset % count
-                    
                     batch = pool[start : start + take_count]
                     
                     # Wrap around
@@ -556,8 +704,13 @@ class MarketScanner:
                     candidates_to_check.extend(batch)
                     self._live_poll_offset = (start + take_count) % count
 
-                logger.debug(f"Live candidates: {len(actually_live)} actual, {len(started_in_past)} started, {len(normal_priority)} normal")
-                logger.info(f"Checking {len(candidates_to_check)} markets for live game status (Live: {len(actually_live)}, Started: {len(started_in_past)})")
+                logger.info(
+                    f"Poll Stats: Live={len(actually_live)}, "
+                    f"Recent={len(recent_starts)} (<6h), "
+                    f"Old={len(old_starts)}, "
+                    f"Future={len(normal_priority)}"
+                )
+                logger.info(f"Checking {len(candidates_to_check)} markets for status...")
 
                 live_count = 0
                 ended_count = 0
@@ -623,6 +776,10 @@ class MarketScanner:
 
                                             if best_bid is not None and best_ask is not None:
                                                 mid_price = (best_bid + best_ask) / 2
+                                                
+                                                # Update spread dynamically
+                                                current_spread = best_ask - best_bid
+                                                market_info['spread'] = current_spread
 
                                                 arb_opp = await self.post_res_arb.check_market_for_arb(
                                                     market_id=condition_id,
@@ -661,7 +818,7 @@ class MarketScanner:
                 logger.info("🔄 REFRESHING MARKET LIST...")
                 
                 # Fetch new data (without updating state yet)
-                new_sports_markets, new_market_questions, _ = self._fetch_sports_markets_data(limit=None)
+                new_sports_markets, new_market_questions, _ = await self._fetch_sports_markets_data(limit=None)
                 
                 if not new_sports_markets:
                     logger.warning("Market refresh failed or returned no markets. Keeping old state.")
@@ -705,7 +862,7 @@ class MarketScanner:
 
         # Fetch all sports markets (no limit - monitor everything we find)
         # Initial load
-        self.fetch_sports_markets(limit=None)
+        await self.fetch_sports_markets(limit=None)
 
         if not self.sports_markets:
             logger.error("No sports markets found to monitor")

@@ -163,6 +163,13 @@ class PostResolutionArbitrage:
         if market_id in self.executed_arbs:
             return None
 
+        # Safety check: Maximum spread to avoid zombie/illiquid markets
+        # User requested limit of 0.1
+        spread = market_info.get('spread', 0)
+        if spread > 0.1:
+            logger.debug(f"Skipping market {market_id[:8]}... Wide spread: {spread:.3f} > 0.1")
+            return None
+
         # Check if market is near-close or worth checking
         end_date_iso = market_info.get('end_date', '')
 
@@ -187,12 +194,12 @@ class PostResolutionArbitrage:
             game_metadata = market_info.get('game_metadata', {})
             if game_metadata:
                 # For game metadata verification, we need to estimate winning price
-                # Use current_price as proxy for now
+                # Use current_price as proxy for now (this is YES token price)
                 result = self._verify_from_game_metadata(
                     market_id,
                     market_question,
                     game_metadata,
-                    winning_token_price=current_price  # Will be refined later
+                    yes_token_price=current_price
                 )
 
             # PRIORITY 2: LLM verification (if enabled and game metadata didn't work)
@@ -494,7 +501,7 @@ class PostResolutionArbitrage:
         market_id: str,
         market_question: str,
         game_metadata: Dict[str, Any],
-        winning_token_price: float
+        yes_token_price: float
     ) -> Optional[GameResult]:
         """
         Verify game result using real-time game metadata from API.
@@ -508,7 +515,7 @@ class PostResolutionArbitrage:
             market_id: Market identifier
             market_question: Market question
             game_metadata: Game metadata from events array
-            winning_token_price: Current price to validate signal strength
+            yes_token_price: Current YES token price to validate signal strength
 
         Returns:
             GameResult or None if game not ended
@@ -545,6 +552,49 @@ class PostResolutionArbitrage:
             self.live_games[market_id] = datetime.now()
             return None
 
+        # Check for CANCELED games
+        # Period 'CAN' = Canceled, 'PPD' = Postponed
+        # Score '0-0' with ended=True usually means canceled/voided in sports like Basketball/Football
+        if period in ['CAN', 'CANCELED', 'PPD', 'POSTPONED']:
+            logger.warning(f"🛑 Game CANCELED/POSTPONED: {market_question} (Period: {period}) - Skipping arb")
+            return None
+            
+        if ended and score == '0-0':
+            logger.warning(f"🛑 Game ended with 0-0 score (likely canceled): {market_question} - Skipping arb")
+            return None
+
+        # Check for DRAWS (1-1, 2-2, etc.) which often resolve to 50-50 or NO for both sides
+        # We want to avoid these ambiguous cases
+        if ended and score:
+            try:
+                # Simple parse to check for equality
+                parts = score.split('-')
+                if len(parts) == 2:
+                    s1 = int(parts[0].strip().split()[-1])
+                    s2 = int(parts[1].strip().split()[0])
+                    if s1 == s2:
+                        logger.warning(f"🛑 Game ended in a DRAW ({score}): {market_question} - Skipping arb")
+                        return None
+            except Exception:
+                pass
+
+        # Check if game is TOO OLD (avoid stale markets from previous weeks)
+        # User requested "same day (or one day before and after)"
+        if ended and start_time:
+            try:
+                from dateutil import parser
+                # Parse and ensure naive UTC for comparison with utcnow
+                start_dt = parser.parse(start_time).replace(tzinfo=None)
+                now = datetime.utcnow()
+                age_seconds = (now - start_dt).total_seconds()
+                
+                # 48 hours = 172800 seconds
+                if age_seconds > 48 * 3600:
+                    logger.warning(f"🛑 Game too old (started {age_seconds/3600:.1f}h ago): {market_question} - Skipping arb")
+                    return None
+            except Exception as e:
+                logger.debug(f"Could not parse start time '{start_time}' for age check: {e}")
+
         # Game hasn't ended yet
         if not ended:
             logger.debug(f"Game not ended: {market_question}")
@@ -570,8 +620,13 @@ class PostResolutionArbitrage:
             return None
 
         # Calculate confidence based on price signal
+        # We rely on CLOB price, which is yes_token_price
+        # If winner is YES, winning price is yes_token_price
+        # If winner is NO, winning price is (1.0 - yes_token_price)
+        price_of_winner = yes_token_price if winner == 'yes' else (1.0 - yes_token_price)
+        
         # If winning token is trading >97c, VERY high confidence
-        confidence = 99 if winning_token_price > self.high_confidence_price_threshold else 95
+        confidence = 99 if price_of_winner > self.high_confidence_price_threshold else 95
 
         result = GameResult(
             market_id=market_id,
@@ -580,7 +635,7 @@ class PostResolutionArbitrage:
             confidence=confidence,
             final_score=score,
             verification_source='game_metadata',
-            reasoning=f"Game ended: {score} ({period}). Price signal: ${winning_token_price:.3f}",
+            reasoning=f"Game ended: {score} ({period}). Price signal (Winner): ${price_of_winner:.3f}",
             game_status='ended'
         )
 

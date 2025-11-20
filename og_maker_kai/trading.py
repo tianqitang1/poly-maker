@@ -20,6 +20,10 @@ import poly_data.CONSTANTS as CONSTANTS
 # Import utility functions for trading
 from poly_data.trading_utils import get_best_bid_ask_deets, get_order_prices, get_buy_sell_amount, round_down, round_up
 from poly_data.data_utils import get_position, get_order, set_position
+from poly_utils.logging_utils import get_logger
+
+# Initialize logger
+logger = get_logger('og_maker_kai')
 
 # Create directory for storing position risk information
 if not os.path.exists('og_maker_kai/positions/'):
@@ -54,15 +58,26 @@ def send_buy_order(order):
     )
 
     if should_cancel:
-        print(f"Cancelling buy orders - price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
+        logger.info(f"Cancelling buy orders - price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         client.cancel_all_asset(order['token'])
     elif not should_cancel:
-        print(f"Keeping existing buy orders - minor changes: price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
+        logger.info(f"Keeping existing buy orders - minor changes: price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         return  # Don't place new order if existing one is fine
 
     # Calculate minimum acceptable price based on market spread
-    incentive_start = order['mid_price'] - order['max_spread']/100
-
+    # Fix precision issue by rounding to appropriate decimal places
+    round_length = 2  # Default fallback
+    if 'row' in order:
+        try:
+            round_length = len(str(order['row']['tick_size']).split(".")[1])
+        except:
+            pass
+            
+    incentive_start = round(order['mid_price'] - order['max_spread']/100, round_length)
+    
+    # Add a tiny epsilon to avoid floating point comparison issues where 0.48 < 0.4800000000000004
+    # But rounding above should handle it.
+    
     trade = True
 
     # Don't place orders that are below incentive threshold
@@ -78,20 +93,21 @@ def send_buy_order(order):
                     'BUY',
                     order['price'],
                     order['size'],
-                    True if order['neg_risk'] == 'TRUE' else False
+                    True if order['neg_risk'] == 'TRUE' else False,
+                    raise_on_error=True
                 )
             except Exception as ex:
                 # Check if this is a balance/allowance error (not enough funds)
                 error_msg = str(ex).lower()
                 if 'balance' in error_msg or 'allowance' in error_msg:
-                    print("WARNING: Buy order failed with balance/allowance error - not enough capital")
+                    logger.warning("WARNING: Buy order failed with balance/allowance error - not enough capital")
                 else:
                     # Re-raise if it's a different error
                     raise
         else:
-            print("Not creating buy order because its outside acceptable price range (0.1-0.9)")
+            logger.info("Not creating buy order because its outside acceptable price range (0.1-0.9)")
     else:
-        print(f'Not creating new order because order price of {order["price"]} is less than incentive start price of {incentive_start}. Mid price is {order["mid_price"]}')
+        logger.info(f'Not creating new order because order price of {order["price"]} is less than incentive start price of {incentive_start}. Mid price is {order["mid_price"]}')
 
 
 def send_sell_order(order):
@@ -122,10 +138,10 @@ def send_sell_order(order):
     )
 
     if should_cancel:
-        print(f"Cancelling sell orders - price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
+        logger.info(f"Cancelling sell orders - price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         client.cancel_all_asset(order['token'])
     elif not should_cancel:
-        print(f"Keeping existing sell orders - minor changes: price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
+        logger.info(f"Keeping existing sell orders - minor changes: price diff: {price_diff:.4f}, size diff: {size_diff:.1f}")
         return  # Don't place new order if existing one is fine
 
     try:
@@ -134,25 +150,52 @@ def send_sell_order(order):
             'SELL',
             order['price'],
             order['size'],
-            True if order['neg_risk'] == 'TRUE' else False
+            True if order['neg_risk'] == 'TRUE' else False,
+            raise_on_error=True
         )
     except Exception as ex:
-        # Check if this is a balance/allowance error (position already sold)
+        # Check if this is a balance/allowance error (position already sold / not enough balance)
         error_msg = str(ex).lower()
         if 'balance' in error_msg or 'allowance' in error_msg:
-            print(f"WARNING: Sell order failed with balance/allowance error. Refreshing position for token {order['token']}")
-            # Force update the actual position from blockchain
+            logger.warning(
+                f"WARNING: Sell order failed with balance/allowance error. "
+                f"Refreshing cached position for token {order['token']}"
+            )
+            # Force update the actual position from blockchain and reconcile with cached state
             from poly_data.data_utils import get_position, set_position
             try:
+                # On-chain size (in shares)
                 actual_position = client.get_position(order['token'])[0] / 10**6
-                current_avg = get_position(order['token'])['avgPrice']
-                print(f"  Cached position was {order['size']}, actual on-chain position is {actual_position}")
-                # Update our cached position to match reality
-                if actual_position != order['size']:
-                    set_position(order['token'], 'SELL', order['size'] - actual_position, current_avg, 'correction')
-                    print(f"  Updated cached position to {actual_position}")
+
+                # Cached size/avg from in-memory state
+                cached_pos = get_position(order['token'])
+                cached_size = float(cached_pos.get('size', 0))
+                current_avg = float(cached_pos.get('avgPrice', 0))
+
+                logger.info(
+                    f"  Cached size {cached_size}, on-chain size {actual_position} "
+                    f"for token {order['token']}"
+                )
+
+                # If there's a mismatch, adjust the cached position toward on-chain reality
+                delta = cached_size - actual_position
+                if abs(delta) > 0:
+                    if delta > 0:
+                        # We thought we had more than we actually do → reduce cached size
+                        adj_side = 'SELL'
+                        adj_size = delta
+                    else:
+                        # We thought we had less than we actually do → increase cached size
+                        adj_side = 'BUY'
+                        adj_size = -delta
+
+                    set_position(order['token'], adj_side, adj_size, current_avg, 'correction')
+                    logger.info(
+                        f"  Adjusted cached position by {delta} shares "
+                        f"(side={adj_side}), new cached size {get_position(order['token'])['size']}"
+                    )
             except Exception as refresh_ex:
-                print(f"  Error refreshing position: {refresh_ex}")
+                logger.error(f"  Error reconciling position after failed sell: {refresh_ex}")
         else:
             # Re-raise if it's a different error
             raise
@@ -163,16 +206,6 @@ market_locks = {}
 async def perform_trade(market):
     """
     Main trading function that handles market making for a specific market.
-
-    ORIGINAL STRATEGY:
-    - Simpler position sizing: just check position < max_size
-    - Stop-loss sells only trade_size (partial exit)
-    - No reverse position checks
-    - Fixed take-profit pricing
-    - More aggressive entry
-
-    Args:
-        market (str): The market ID to trade on
     """
     # Create a lock for this market if it doesn't exist
     if market not in market_locks:
@@ -183,6 +216,9 @@ async def perform_trade(market):
         try:
             client = global_state.client
             # Get market details from the configuration
+            if market not in global_state.df['condition_id'].values:
+                return
+
             row = global_state.df[global_state.df['condition_id'] == market].iloc[0]
             # Determine decimal precision from tick size
             round_length = len(str(row['tick_size']).split(".")[1])
@@ -195,7 +231,21 @@ async def perform_trade(market):
                 {'name': 'token1', 'token': row['token1'], 'answer': row['answer1']},
                 {'name': 'token2', 'token': row['token2'], 'answer': row['answer2']}
             ]
-            print(f"\n\n{pd.Timestamp.utcnow().tz_localize(None)}: {row['question']}")
+            logger.info(f"\n\n{pd.Timestamp.utcnow().tz_localize(None)}: {row['question']}")
+            
+            # Use primary token (YES) for price lookups to ensure consistent inversion logic
+            if market not in global_state.all_data:
+                logger.info(f"Waiting for data on market {market}")
+                return
+            
+            # Check data source orientation
+            # If the stored book asset matches token2 (NO token), we need to swap our lookup logic
+            stored_asset_id = str(global_state.all_data[market].get('asset_id', ''))
+            is_book_inverted = (stored_asset_id == str(row['token2']))
+            global_state.all_data[market]['book_inverted'] = is_book_inverted
+            
+            if is_book_inverted:
+                 logger.debug(f"Market {market}: Book data is for NO token. adjusting price lookups.")
 
             # Get current positions for both outcomes
             pos_1 = get_position(row['token1'])['size']
@@ -214,12 +264,17 @@ async def perform_trade(market):
                 scaled_amt = amount_to_merge / 10**6
 
                 if scaled_amt > CONSTANTS.MIN_MERGE_SIZE:
-                    print(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}. Merging positions")
+                    logger.info(f"Position 1 is of size {pos_1} and Position 2 is of size {pos_2}. Merging positions")
                     # Execute the merge operation
                     client.merge_positions(amount_to_merge, market, row['neg_risk'] == 'TRUE')
                     # Update our local position tracking
                     set_position(row['token1'], 'SELL', scaled_amt, 0, 'merge')
                     set_position(row['token2'], 'SELL', scaled_amt, 0, 'merge')
+
+            # Store potential buy orders to execute them only if both sides are valid
+            buy_candidates = []
+            market_valid_for_buys = True
+            failed_reason = None
 
             # ------- TRADING LOGIC FOR EACH OUTCOME -------
             # Loop through both outcomes in the market (YES and NO)
@@ -229,24 +284,61 @@ async def perform_trade(market):
                 # Get current orders for this token
                 orders = get_order(token)
 
+                # Determine lookup name for pricing utils
+                # Standard: token1 (YES) book -> 'token1' reads direct, 'token2' inverts
+                # Inverted: token2 (NO) book  -> 'token1' needs to invert (ask for 'token2'), 'token2' reads direct (ask for 'token1')
+                lookup_name = detail['name']
+                if is_book_inverted:
+                    lookup_name = 'token2' if detail['name'] == 'token1' else 'token1'
+
                 # Get market depth and price information
-                deets = get_best_bid_ask_deets(market, detail['name'], 100, 0.1)
+                # Use min_size from config to determine what counts as "real" liquidity
+                # This allows handling both thin/volatile markets (low min_size) and stable ones (high min_size)
+                check_size = max(row.get('min_size', 5), 5)
+                deets_data = get_best_bid_ask_deets(market, lookup_name, check_size, 0.1)
 
-                #if deet has None for one these values below, call it with min size of 20
-                if deets['best_bid'] is None or deets['best_ask'] is None or deets['best_bid_size'] is None or deets['best_ask_size'] is None:
-                    deets = get_best_bid_ask_deets(market, detail['name'], 20, 0.1)
+                #if deet has None for one these values below, call it with min size of 5
+                if deets_data['best_bid'] is None or deets_data['best_ask'] is None or deets_data['best_bid_size'] is None or deets_data['best_ask_size'] is None:
+                    deets_data = get_best_bid_ask_deets(market, lookup_name, 5, 0.1)
 
-                # Extract all order book details
-                best_bid = deets['best_bid']
-                best_bid_size = deets['best_bid_size']
-                second_best_bid = deets['second_best_bid']
-                second_best_bid_size = deets['second_best_bid_size']
-                top_bid = deets['top_bid']
-                best_ask = deets['best_ask']
-                best_ask_size = deets['best_ask_size']
-                second_best_ask = deets['second_best_ask']
-                second_best_ask_size = deets['second_best_ask_size']
-                top_ask = deets['top_ask']
+                # Detect collapsed liquidity by rechecking with a smaller request size
+                fallback_size = max(5, min(check_size / 2, check_size))
+                best_bid = deets_data['best_bid']
+                best_bid_size = deets_data['best_bid_size']
+                best_ask = deets_data['best_ask']
+                best_ask_size = deets_data['best_ask_size']
+                need_refine = False
+                observed_spread = None
+
+                if best_bid is None or best_ask is None:
+                    need_refine = True
+                elif check_size > 5:
+                    observed_spread = best_ask - best_bid
+                    tight_threshold = max(params['spread_threshold'] * 2, 0.05)
+                    if observed_spread is not None and observed_spread > tight_threshold:
+                        need_refine = True
+                    depth_floor = check_size * 0.5
+                    if (best_bid_size is not None and best_bid_size < depth_floor) or (best_ask_size is not None and best_ask_size < depth_floor):
+                        need_refine = True
+
+                if need_refine and fallback_size < check_size:
+                    refined = get_best_bid_ask_deets(market, lookup_name, fallback_size, 0.1)
+                    if refined['best_bid'] is not None and refined['best_ask'] is not None:
+                        logger.info(f"Detected thin book for {detail['answer']} – falling back to size {fallback_size} from {check_size}")
+                        deets_data = refined
+                        check_size = fallback_size
+
+                # Extract all order book details after any refinement
+                best_bid = deets_data['best_bid']
+                best_bid_size = deets_data['best_bid_size']
+                second_best_bid = deets_data['second_best_bid']
+                second_best_bid_size = deets_data['second_best_bid_size']
+                top_bid = deets_data['top_bid']
+                best_ask = deets_data['best_ask']
+                best_ask_size = deets_data['best_ask_size']
+                second_best_ask = deets_data['second_best_ask']
+                second_best_ask_size = deets_data['second_best_ask_size']
+                top_ask = deets_data['top_ask']
 
                 # Patch book with our local orders to prevent race conditions/lag
                 my_buy_price = orders['buy']['price']
@@ -275,7 +367,7 @@ async def perform_trade(market):
 
                 # Calculate ratio of buy vs sell liquidity in the market
                 try:
-                    overall_ratio = (deets['bid_sum_within_n_percent']) / (deets['ask_sum_within_n_percent'])
+                    overall_ratio = (deets_data['bid_sum_within_n_percent']) / (deets_data['ask_sum_within_n_percent'])
                 except:
                     overall_ratio = 0
 
@@ -308,7 +400,7 @@ async def perform_trade(market):
                 mid_price = (top_bid + top_ask) / 2
 
                 # Log market conditions for this outcome
-                print(f"\nFor {detail['answer']}. Orders: {orders} Position: {position}, "
+                logger.info(f"\nFor {detail['answer']}. Orders: {orders} Position: {position}, "
                       f"avgPrice: {avgPrice}, Best Bid: {best_bid}, Best Ask: {best_ask}, "
                       f"Bid Price: {bid_price}, Ask Price: {ask_price}, Mid Price: {mid_price}")
 
@@ -333,156 +425,194 @@ async def perform_trade(market):
                     'row': row
                 }
 
-                print(f"Position: {position}, Other Position: {other_position}, "
+                logger.info(f"Position: {position}, Other Position: {other_position}, "
                       f"Trade Size: {row['trade_size']}, Max Size: {max_size}, "
                       f"buy_amount: {buy_amount}, sell_amount: {sell_amount}")
 
                 # File to store risk management information for this market
                 fname = 'og_maker_kai/positions/' + str(market) + '.json'
 
-                # ------- SELL ORDER LOGIC (STOP-LOSS) -------
+                # ------- SELL ORDER LOGIC (STOP-LOSS) ------- 
                 if sell_amount > 0:
                     # Skip if we have no average price (no real position)
                     if avgPrice == 0:
-                        print("Avg Price is 0. Skipping")
-                        continue
+                        logger.info("Avg Price is 0. Skipping")
+                        # Continue to buy logic? No, sell logic is independent but loop continues
+                    else:
+                        order['size'] = sell_amount
+                        order['price'] = ask_price
 
-                    order['size'] = sell_amount
-                    order['price'] = ask_price
+                        # Determine lookup name for risk assessment (same logic as above)
+                        lookup_name = detail['name']
+                        if is_book_inverted:
+                            lookup_name = 'token2' if detail['name'] == 'token1' else 'token1'
 
-                    # Get fresh market data for risk assessment
-                    n_deets = get_best_bid_ask_deets(market, detail['name'], 100, 0.1)
+                        # Get fresh market data for risk assessment with dynamic sizing
+                        risk_check_size = max(check_size, row.get('min_size', 5), 5)
+                        n_deets = get_best_bid_ask_deets(market, lookup_name, risk_check_size, 0.1)
 
-                    # Calculate current market price and spread
-                    mid_price = round_up((n_deets['best_bid'] + n_deets['best_ask']) / 2, round_length)
-                    spread = round(n_deets['best_ask'] - n_deets['best_bid'], 2)
+                        if n_deets['best_bid'] is None or n_deets['best_ask'] is None:
+                            n_deets = get_best_bid_ask_deets(market, lookup_name, 5, 0.1)
 
-                    # Calculate current profit/loss on position
-                    pnl = (mid_price - avgPrice) / avgPrice * 100
+                        if n_deets['best_bid'] is None or n_deets['best_ask'] is None:
+                            logger.warning(f"Unable to compute stop-loss prices for {detail['answer']} due to empty book")
+                            continue
 
-                    print(f"Mid Price: {mid_price}, Spread: {spread}, PnL: {pnl}")
+                        # Calculate current market price and spread
+                        mid_price = round_up((n_deets['best_bid'] + n_deets['best_ask']) / 2, round_length)
+                        spread = round(n_deets['best_ask'] - n_deets['best_bid'], 2)
 
-                    # Prepare risk details for tracking
-                    risk_details = {
-                        'time': str(pd.Timestamp.utcnow().tz_localize(None)),
-                        'question': row['question']
-                    }
+                        # Calculate current profit/loss on position
+                        pnl = (mid_price - avgPrice) / avgPrice * 100
 
-                    try:
-                        ratio = (n_deets['bid_sum_within_n_percent']) / (n_deets['ask_sum_within_n_percent'])
-                    except:
-                        ratio = 0
+                        logger.info(f"Mid Price: {mid_price}, Spread: {spread}, PnL: {pnl}")
 
-                    # ORIGINAL: Sell only trade_size amount (partial exit)
-                    pos_to_sell = sell_amount
+                        # Prepare risk details for tracking
+                        risk_details = {
+                            'time': str(pd.Timestamp.utcnow().tz_localize(None)),
+                            'question': row['question']
+                        }
 
-                    # ------- STOP-LOSS LOGIC -------
-                    # Trigger stop-loss if either:
-                    # 1. PnL is below threshold and spread is tight enough to exit
-                    # 2. Volatility is too high
-                    if (pnl < params['stop_loss_threshold'] and spread <= params['spread_threshold']) or row['3_hour'] > params['volatility_threshold']:
-                        risk_details['msg'] = (f"Selling {pos_to_sell} because spread is {spread} and pnl is {pnl} "
-                                              f"and ratio is {ratio} and 3 hour volatility is {row['3_hour']}")
-                        print("Stop loss Triggered: ", risk_details['msg'])
+                        try:
+                            ratio = (n_deets['bid_sum_within_n_percent']) / (n_deets['ask_sum_within_n_percent'])
+                        except:
+                            ratio = 0
 
-                        # Sell at market best bid to ensure execution
-                        order['size'] = pos_to_sell
-                        order['price'] = n_deets['best_bid']
+                        # ORIGINAL: Sell only trade_size amount (partial exit)
+                        pos_to_sell = sell_amount
 
-                        # Set period to avoid trading after stop-loss
-                        risk_details['sleep_till'] = str(pd.Timestamp.utcnow().tz_localize(None) +
-                                                        pd.Timedelta(hours=params['sleep_period']))
+                        # ------- STOP-LOSS LOGIC ------- 
+                        # Trigger stop-loss if either:
+                        # 1. PnL is below threshold (even if book is thin after double-checking)
+                        # 2. Volatility is too high
+                        stoploss_due_to_pnl = pnl < params['stop_loss_threshold']
+                        spread_ok = spread <= params['spread_threshold']
+                        liquidity_collapse = False
 
-                        print("Risking off")
-                        send_sell_order(order)
-                        client.cancel_all_market(market)
+                        if stoploss_due_to_pnl and not spread_ok:
+                            fallback_size = max(5, risk_check_size / 2)
+                            refined = None
+                            if fallback_size < risk_check_size:
+                                refined = get_best_bid_ask_deets(market, lookup_name, fallback_size, 0.1)
+                            if refined and refined['best_bid'] is not None and refined['best_ask'] is not None:
+                                refined_spread = round(refined['best_ask'] - refined['best_bid'], 2)
+                                if refined_spread <= params['spread_threshold']:
+                                    n_deets = refined
+                                    spread = refined_spread
+                                    spread_ok = True
+                                    mid_price = round_up((n_deets['best_bid'] + n_deets['best_ask']) / 2, round_length)
+                                else:
+                                    liquidity_collapse = True
+                                    n_deets = refined
+                            else:
+                                liquidity_collapse = True
 
-                        # Save risk details to file
-                        open(fname, 'w').write(json.dumps(risk_details))
-                        continue
+                        if (stoploss_due_to_pnl and (spread_ok or liquidity_collapse)) or row['3_hour'] > params['volatility_threshold']:
+                            risk_details['msg'] = (f"Selling {pos_to_sell} because spread is {spread} and pnl is {pnl} "
+                                                  f"and ratio is {ratio} and 3 hour volatility is {row['3_hour']}")
+                            logger.info(f"Stop loss Triggered: {risk_details['msg']}")
 
-                # ------- BUY ORDER LOGIC -------
+                            if n_deets['best_bid'] is None:
+                                logger.warning("Cannot execute stop loss – no best bid in fallback book")
+                                continue
+
+                            # Sell at market best bid to ensure execution
+                            order['size'] = pos_to_sell
+                            order['price'] = n_deets['best_bid']
+
+                            # Set period to avoid trading after stop-loss
+                            risk_details['sleep_till'] = str(pd.Timestamp.utcnow().tz_localize(None) +
+                                                            pd.Timedelta(hours=params['sleep_period']))
+
+                            logger.info("Risking off")
+                            send_sell_order(order)
+                            client.cancel_all_market(market)
+
+                            # Save risk details to file
+                            open(fname, 'w').write(json.dumps(risk_details))
+                            
+                            # If we trigger stop-loss, we likely shouldn't be buying either
+                            market_valid_for_buys = False
+                            failed_reason = "Stop loss triggered"
+                            continue
+                
+                # ------- BUY ORDER LOGIC PREPARATION ------- 
+                # Don't process buys if we already failed market validation
+                if not market_valid_for_buys:
+                    continue
+                    
                 # Get max_size, defaulting to trade_size if not specified
                 max_size = row.get('max_size', row['trade_size'])
 
-                # ORIGINAL: Simple check - only buy if position < max_size
+                # Check basic conditions
                 if position < max_size and position < 250 and buy_amount > 0 and buy_amount >= row['min_size']:
                     # Get reference price from market data
                     sheet_value = row['best_bid']
-
                     if detail['name'] == 'token2':
                         sheet_value = 1 - row['best_ask']
-
                     sheet_value = round(sheet_value, round_length)
+                    
                     order['size'] = buy_amount
                     order['price'] = bid_price
 
                     # Check if price is far from reference
                     price_change = abs(order['price'] - sheet_value)
 
-                    send_buy = True
-
-                    # ------- RISK-OFF PERIOD CHECK -------
-                    # If we're in a risk-off period (after stop-loss), don't buy
+                    # Validate Conditions
+                    # 1. Risk-off period check
                     if os.path.isfile(fname):
                         risk_details = json.load(open(fname))
-
                         start_trading_at = pd.to_datetime(risk_details['sleep_till'])
                         current_time = pd.Timestamp.utcnow().tz_localize(None)
 
-                        print(risk_details, current_time, start_trading_at)
                         if current_time < start_trading_at:
-                            send_buy = False
-                            print(f"Not sending a buy order because recently risked off. "
-                                 f"Risked off at {risk_details['time']}")
+                            logger.info(f"Skipping buy: Risked off until {start_trading_at}")
+                            market_valid_for_buys = False
+                            failed_reason = "Recently risked off"
+                            continue
 
-                    # Only proceed if we're not in risk-off period
-                    if send_buy:
-                        # Don't buy if volatility is high or price is far from reference
-                        if row['3_hour'] > params['volatility_threshold'] or price_change >= 0.05:
-                            print(f'3 Hour Volatility of {row["3_hour"]} is greater than max volatility of '
-                                  f'{params["volatility_threshold"]} or price of {order["price"]} is outside '
-                                  f'0.05 of {sheet_value}. Cancelling all orders')
-                            client.cancel_all_asset(order['token'])
-                        else:
-                            # ORIGINAL: No reverse position check here
-                    # OG MAKER KAI: Removed reverse position check to allow two-sided market making
-                            # This allows capturing the spread by holding both YES and NO positions
-                            
-                            # Check market buy/sell volume ratio
-                            if overall_ratio < 0:
-                                send_buy = False
-                                print(f"Not sending a buy order because overall ratio is {overall_ratio}")
-                                client.cancel_all_asset(order['token'])
-                            else:
-                                # Place new buy order if any of these conditions are met:
-                                # 1. We can get a better price than current order
-                                if best_bid > orders['buy']['price']:
-                                    print(f"Sending Buy Order for {token} because better price. "
-                                          f"Orders look like this: {orders['buy']}. Best Bid: {best_bid}")
-                                    send_buy_order(order)
-                                # 2. Current position + orders is not enough to reach max_size
-                                elif position + orders['buy']['size'] < 0.95 * max_size:
-                                    print(f"Sending Buy Order for {token} because not enough position + size")
-                                    send_buy_order(order)
-                                # 3. Our current order is too large and needs to be resized
-                                elif orders['buy']['size'] > order['size'] * 1.01:
-                                    print(f"Resending buy orders because open orders are too large")
-                                    send_buy_order(order)
+                    # 2. Volatility check
+                    if row['3_hour'] > params['volatility_threshold']:
+                        logger.info(f"Skipping buy for {detail['answer']}: Volatility {row['3_hour']} > {params['volatility_threshold']}")
+                        continue
+                        
+                    # 3. Price deviation check
+                    if price_change >= 0.05:
+                        logger.info(f"Skipping buy for {detail['answer']}: Price deviation {price_change:.3f} >= 0.05")
+                        continue
+                        
+                    # 4. Ratio check
+                    if overall_ratio < 0:
+                        logger.info(f"Skipping buy for {detail['answer']}: Ratio {overall_ratio} < 0")
+                        continue
 
-                # ------- TAKE PROFIT / SELL ORDER MANAGEMENT -------
+                    # 5. Incentive Start Price Check (The specific error user saw)
+                    incentive_start = round(mid_price - row['max_spread']/100, round_length)
+                    if order['price'] < incentive_start:
+                         logger.info(f"Skipping buy for {detail['answer']}: Price {order['price']} < Incentive Start {incentive_start}")
+                         continue
+
+                    # 6. Determine if we *need* to send an order
+                    should_send = False
+                    if best_bid > orders['buy']['price']:
+                        should_send = True
+                    elif position + orders['buy']['size'] < 0.95 * max_size:
+                        should_send = True
+                    elif orders['buy']['size'] > order['size'] * 1.01:
+                        should_send = True
+                    
+                    if should_send:
+                        buy_candidates.append(order)
+
+                # ------- TAKE PROFIT / SELL ORDER MANAGEMENT ------- 
+                # This is managing existing position exits, should run independently of buy-side validation
                 elif sell_amount > 0:
                     order['size'] = sell_amount
 
                     # OG MAKER KAI: Volatility-Adjusted Take-Profit
-                    # If 3-hour volatility is high (> threshold), increase TP target to capture more upside
                     base_tp_threshold = params['take_profit_threshold']
-                    
-                    # If volatility is high (e.g. > 50% of max threshold), scale up TP
-                    # Example: if vol is 0.1 and max is 0.15, we might want higher TP
                     volatility_factor = 1.0
                     if row['3_hour'] > params['volatility_threshold'] * 0.5:
-                        # Increase TP by up to 50% based on how high volatility is
                         vol_ratio = min(row['3_hour'] / params['volatility_threshold'], 1.5)
                         volatility_factor = max(1.0, vol_ratio)
                         
@@ -494,24 +624,34 @@ async def perform_trade(market):
                     tp_price = float(tp_price)
                     order_price = float(orders['sell']['price'])
 
-                    # Calculate % difference between current order and ideal price
                     diff = abs(order_price - tp_price)/tp_price * 100
 
-                    # Update sell order if:
-                    # 1. Current order price is significantly different from target
                     if diff > 2:
-                        print(f"Sending Sell Order for {token} because better current order price of "
-                              f"{order_price} is deviant from the tp_price of {tp_price} and diff is {diff}")
+                        logger.info(f"Sending Sell Order for {token} (TP update) - diff {diff:.2f}%")
                         send_sell_order(order)
-                    # 2. Current order size is too small for our position
                     elif orders['sell']['size'] < position * 0.97:
-                        print(f"Sending Sell Order for {token} because not enough sell size. "
-                              f"Position: {position}, Sell Size: {orders['sell']['size']}")
+                        logger.info(f"Sending Sell Order for {token} (TP size update)")
                         send_sell_order(order)
 
+            # ------- EXECUTE BUYS IF VALID ------- 
+            if not market_valid_for_buys:
+                logger.info(f"Skipping ALL buy orders for {row['question']} due to: {failed_reason}")
+                # Optionally cancel all buys if market is invalid?
+                # client.cancel_all_market(market) # Maybe too aggressive? 
+                # For now, just don't place new ones.
+            else:
+                # If we are here, both sides PASSED the validity checks (or didn't fail them).
+                # However, we might only have 1 candidate if the other side didn't need an order update (already optimal).
+                # That is fine. The requirement is "do not place IF requirements for OTHER side are NOT MET".
+                # Since market_valid_for_buys is True, requirements ARE met for both sides.
+                
+                if len(buy_candidates) > 0:
+                    logger.info(f"Executing {len(buy_candidates)} valid buy orders")
+                    for order in buy_candidates:
+                        send_buy_order(order)
+
         except Exception as ex:
-            print(f"Error performing trade for {market}: {ex}")
-            traceback.print_exc()
+            logger.error(f"Error performing trade for {market}: {ex}", exc_info=True)
 
         # Clean up memory and introduce a small delay
         gc.collect()
