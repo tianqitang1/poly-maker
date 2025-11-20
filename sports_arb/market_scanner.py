@@ -70,7 +70,6 @@ class SportsMarketScanner:
         period = event.get('period')
         live = event.get('live', False)
         ended = event.get('ended', False)
-        series_slug = event.get('seriesSlug') or market.get('seriesSlug')
         
         for market in event_markets:
             # We only want Moneyline (Winner) markets
@@ -81,19 +80,20 @@ class SportsMarketScanner:
             if not condition_id:
                 continue
                 
-            # League whitelist
-            if self.allowed_series and series_slug and series_slug not in self.allowed_series:
-                continue
-
-            # Liquidity filters (open interest / order book liquidity)
-            if not self._passes_liquidity_filters(market, event):
-                continue
-
             # Parse outcomes/tokens
             clob_ids = json.loads(market.get('clobTokenIds', '[]'))
             outcomes = json.loads(market.get('outcomes', '[]'))
             
             if len(clob_ids) != 2:
+                continue
+
+            # League whitelist (series slug can live on market or event)
+            series_slug = market.get('seriesSlug') or event.get('seriesSlug')
+            if self.allowed_series and series_slug and series_slug not in self.allowed_series:
+                continue
+
+            # Liquidity filters (open interest / order book liquidity)
+            if not self._passes_liquidity_filters(market, event):
                 continue
                 
             market_info = {
