@@ -1,0 +1,39 @@
+# Sports Arb Configuration
+
+# Market Scanning
+scanner:
+  refresh_interval: 60  # seconds between market list refreshes
+  max_markets: 200      # max markets to monitor via websocket
+  
+# Strategy Parameters
+strategy:
+  enabled: true
+  dry_run: true         # Set to false to enable real trading
+  
+  # Capital Management
+  max_position_size: 20.0  # Max USDC per trade
+  min_profit_cents: 1.0    # Min profit per share to execute
+  
+  # Post-Resolution Arb (Game Ended)
+  post_res_arb:
+    enabled: true
+    min_confidence: 90     # % confidence in winner
+    price_ceiling: 0.995    # Max price to buy at (e.g. don't buy at 99.5c)
+    
+  # Flash/Momentum Arb (Live Game)
+  flash_arb:
+    enabled: true
+    
+    # Only consider buying tokens that are already "winning"
+    min_price_to_trade: 0.90
+    
+    # Momentum Trigger: Buy if price jumps UP by this much within high range
+    # e.g. if price is 0.92 and jumps to 0.95, buy
+    momentum_threshold: 0.05 
+    
+    # Reversal logic: Only buy the flip side if the previous favorite crashes below this
+    reversal_confirmation_price: 0.3
+
+# Logging
+logging:
+  level: INFO
