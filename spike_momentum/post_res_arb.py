@@ -194,12 +194,12 @@ class PostResolutionArbitrage:
             game_metadata = market_info.get('game_metadata', {})
             if game_metadata:
                 # For game metadata verification, we need to estimate winning price
-                # Use current_price as proxy for now
+                # Use current_price as proxy for now (this is YES token price)
                 result = self._verify_from_game_metadata(
                     market_id,
                     market_question,
                     game_metadata,
-                    winning_token_price=current_price  # Will be refined later
+                    yes_token_price=current_price
                 )
 
             # PRIORITY 2: LLM verification (if enabled and game metadata didn't work)
@@ -501,7 +501,7 @@ class PostResolutionArbitrage:
         market_id: str,
         market_question: str,
         game_metadata: Dict[str, Any],
-        winning_token_price: float
+        yes_token_price: float
     ) -> Optional[GameResult]:
         """
         Verify game result using real-time game metadata from API.
@@ -515,7 +515,7 @@ class PostResolutionArbitrage:
             market_id: Market identifier
             market_question: Market question
             game_metadata: Game metadata from events array
-            winning_token_price: Current price to validate signal strength
+            yes_token_price: Current YES token price to validate signal strength
 
         Returns:
             GameResult or None if game not ended
@@ -620,8 +620,13 @@ class PostResolutionArbitrage:
             return None
 
         # Calculate confidence based on price signal
+        # We rely on CLOB price, which is yes_token_price
+        # If winner is YES, winning price is yes_token_price
+        # If winner is NO, winning price is (1.0 - yes_token_price)
+        price_of_winner = yes_token_price if winner == 'yes' else (1.0 - yes_token_price)
+        
         # If winning token is trading >97c, VERY high confidence
-        confidence = 99 if winning_token_price > self.high_confidence_price_threshold else 95
+        confidence = 99 if price_of_winner > self.high_confidence_price_threshold else 95
 
         result = GameResult(
             market_id=market_id,
@@ -630,7 +635,7 @@ class PostResolutionArbitrage:
             confidence=confidence,
             final_score=score,
             verification_source='game_metadata',
-            reasoning=f"Game ended: {score} ({period}). Price signal: ${winning_token_price:.3f}",
+            reasoning=f"Game ended: {score} ({period}). Price signal (Winner): ${price_of_winner:.3f}",
             game_status='ended'
         )
 

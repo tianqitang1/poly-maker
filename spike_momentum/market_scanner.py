@@ -442,10 +442,59 @@ class MarketScanner:
         return False
 
     def get_token_ids(self) -> List[str]:
-        """Get list of token IDs to subscribe to."""
+        """
+        Get list of token IDs to subscribe to.
+        Filters to stay within WebSocket limit (500 assets).
+        Prioritizes: Live/Ended > Recent > Upcoming
+        """
         token_ids = []
-
-        for market_info in self.sports_markets.values():
+        
+        # Prioritize markets
+        priority_markets = []
+        now = datetime.utcnow()
+        
+        for condition_id, info in self.sports_markets.items():
+            # Score matches based on priority
+            score = 0
+            
+            # 1. Live/Ended (Highest Priority)
+            meta = info.get('game_metadata', {})
+            if meta.get('live'): score = 1000
+            elif meta.get('ended'): score = 900
+            
+            # 2. Time-based
+            start_str = info.get('game_start_time')
+            if start_str:
+                try:
+                    from dateutil import parser
+                    start_dt = parser.parse(start_str).replace(tzinfo=None)
+                    diff = (start_dt - now).total_seconds()
+                    
+                    # Started within last 24h
+                    if -24*3600 < diff <= 0: 
+                        score = max(score, 800)
+                    # Starts in next 24h
+                    elif 0 < diff < 24*3600:
+                        score = max(score, 700)
+                    # Starts in next 3 days
+                    elif 24*3600 <= diff < 72*3600:
+                        score = max(score, 600)
+                    # Older or further out
+                    else:
+                        score = max(score, 100)
+                        
+                except:
+                    pass
+            
+            priority_markets.append((score, info))
+            
+        # Sort by score descending
+        priority_markets.sort(key=lambda x: x[0], reverse=True)
+        
+        # Take top 240 markets (480 tokens) to stay under 500 limit
+        selected = priority_markets[:240]
+        
+        for score, market_info in selected:
             yes_token = market_info.get('yes_token')
             no_token = market_info.get('no_token')
 
@@ -454,7 +503,7 @@ class MarketScanner:
             if no_token:
                 token_ids.append(no_token)
 
-        logger.info(f"Generated {len(token_ids)} token IDs to monitor")
+        logger.info(f"Generated {len(token_ids)} token IDs to monitor (filtered from {len(self.sports_markets)} markets)")
         return token_ids
 
     async def _fetch_live_game_status(self, market_slug: str) -> Optional[Dict[str, Any]]:

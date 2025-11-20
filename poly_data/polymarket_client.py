@@ -172,6 +172,22 @@ class PolymarketClient:
             print(ex)
             return {}
 
+    def get_market(self, condition_id):
+        """
+        Get market information by condition ID.
+        
+        Args:
+            condition_id (str): Market condition ID
+            
+        Returns:
+            dict: Market information
+        """
+        try:
+            return self.client.get_market(condition_id)
+        except Exception as e:
+            print(f"Error fetching market {condition_id}: {e}")
+            return None
+
     def get_order_book(self, market):
         """
         Get the current order book for a specific market.

@@ -31,11 +31,15 @@ class PriceHistory:
         self.best_bid = None
         self.best_ask = None
         self.mid_price = None
+        self.last_price = None # Price from immediately preceding update
 
     def update(self, bid: float, ask: float, timestamp: Optional[float] = None):
         """Update price history."""
         if timestamp is None:
             timestamp = time.time()
+
+        # Store previous price before updating
+        self.last_price = self.mid_price
 
         self.best_bid = bid
         self.best_ask = ask
@@ -170,6 +174,7 @@ class SpikeDetector:
 
         # Detection parameters
         self.price_change_threshold = config.get('price_change_threshold', 0.02)  # 2%
+        self.flash_threshold = config.get('flash_threshold', 0.05)  # 5% instantaneous jump
         self.time_windows = config.get('time_windows', [30, 60, 300])  # seconds
         self.volatility_multiplier = config.get('volatility_multiplier', 2.0)
 
@@ -183,6 +188,7 @@ class SpikeDetector:
         logger.info(
             f"Initialized SpikeDetector "
             f"(threshold={self.price_change_threshold*100:.1f}%, "
+            f"flash={self.flash_threshold*100:.1f}%, "
             f"windows={self.time_windows}s)"
         )
 
@@ -217,7 +223,16 @@ class SpikeDetector:
         # Update price
         history.update(best_bid, best_ask)
 
-        # Check for spikes across all time windows
+        # 1. Check for FLASH spikes (Instantaneous tick-to-tick)
+        flash_spike = self._check_flash_spike(market_id, market_question, history)
+        if flash_spike:
+            if not self._is_on_cooldown(market_id):
+                self.recent_spikes.append(flash_spike)
+                self._cleanup_old_spikes()
+                logger.info(f"⚡ FLASH SPIKE DETECTED: {flash_spike}")
+                return flash_spike
+
+        # 2. Check for trend spikes across time windows
         for window in self.time_windows:
             spike = self._check_spike(
                 market_id=market_id,
@@ -235,6 +250,40 @@ class SpikeDetector:
                     logger.info(f"Spike detected: {spike}")
                     return spike
 
+        return None
+
+    def _check_flash_spike(
+        self, 
+        market_id: str, 
+        market_question: str, 
+        history: PriceHistory
+    ) -> Optional[Spike]:
+        """Check for instantaneous price jumps (tick-to-tick)."""
+        if not history.mid_price or not history.last_price:
+            return None
+            
+        # Avoid division by zero
+        if history.last_price == 0:
+            return None
+            
+        # Calculate change
+        change_pct = (history.mid_price - history.last_price) / history.last_price
+        
+        if abs(change_pct) >= self.flash_threshold:
+            direction = 'up' if change_pct > 0 else 'down'
+            
+            return Spike(
+                market_id=market_id,
+                market_question=market_question,
+                direction=direction,
+                current_price=history.mid_price,
+                previous_price=history.last_price,
+                price_change_pct=change_pct * 100,
+                time_window=0, # 0 indicates instant/flash
+                spike_strength=10.0, # Arbitrary high strength for flash events
+                detected_at=time.time()
+            )
+        
         return None
 
     def _check_spike(
