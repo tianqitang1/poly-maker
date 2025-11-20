@@ -1,10 +1,31 @@
-# Sports Arb Configuration
+# Sports Arb Configuration (example)
+
+# Copy this file to sports_arb/config.yaml and edit values locally.
 
 # Market Scanning
 scanner:
   refresh_interval: 60  # seconds between market list refreshes
   max_markets: 200      # max markets to monitor via websocket
   recent_window_hours: 48  # only include games starting within +/- this window
+  # Restrict to major leagues only; empty list means allow all
+  allowed_series:
+    - nfl
+    - nba
+    - mlb
+    - nhl
+    - epl
+    - lal      # La Liga
+    - sea      # Serie A
+    - fl1      # Ligue 1
+    - bun      # Bundesliga
+    - ucl
+    - mls
+    - cfb
+    - ncaab
+    - wnba
+  # Filter out dead books
+  min_liquidity_clob: 1.0
+  min_open_interest: 25
 
 # Strategy Parameters
 strategy:

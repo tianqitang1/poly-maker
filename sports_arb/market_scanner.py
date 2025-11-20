@@ -24,6 +24,9 @@ class SportsMarketScanner:
         scanner_cfg = config.get('scanner', {}) if config else {}
         # Only watch games within a recent window to avoid stale/canceled markets
         self.recent_window_hours = scanner_cfg.get('recent_window_hours', 48)
+        self.allowed_series = set(scanner_cfg.get('allowed_series', []))
+        self.min_liquidity_clob = float(scanner_cfg.get('min_liquidity_clob', 0))
+        self.min_open_interest = float(scanner_cfg.get('min_open_interest', 0))
         
     async def fetch_active_sports_markets(self) -> List[Dict[str, Any]]:
         """
@@ -67,6 +70,7 @@ class SportsMarketScanner:
         period = event.get('period')
         live = event.get('live', False)
         ended = event.get('ended', False)
+        series_slug = event.get('seriesSlug') or market.get('seriesSlug')
         
         for market in event_markets:
             # We only want Moneyline (Winner) markets
@@ -77,6 +81,14 @@ class SportsMarketScanner:
             if not condition_id:
                 continue
                 
+            # League whitelist
+            if self.allowed_series and series_slug and series_slug not in self.allowed_series:
+                continue
+
+            # Liquidity filters (open interest / order book liquidity)
+            if not self._passes_liquidity_filters(market, event):
+                continue
+
             # Parse outcomes/tokens
             clob_ids = json.loads(market.get('clobTokenIds', '[]'))
             outcomes = json.loads(market.get('outcomes', '[]'))
@@ -95,6 +107,7 @@ class SportsMarketScanner:
                 'period': period,
                 'start_time': market.get('gameStartTime'),
                 'end_date': market.get('endDate'),
+                'series_slug': series_slug,
                 'tokens': [
                     {'id': clob_ids[0], 'outcome': outcomes[0] if len(outcomes)>0 else 'Yes'},
                     {'id': clob_ids[1], 'outcome': outcomes[1] if len(outcomes)>1 else 'No'}
@@ -129,6 +142,21 @@ class SportsMarketScanner:
             return -self.recent_window_hours <= diff_hours <= self.recent_window_hours
         except Exception:
             return True  # Unable to parse; keep existing behavior
+
+    def _passes_liquidity_filters(self, market: Dict[str, Any], event: Dict[str, Any]) -> bool:
+        """Ensure market has minimum liquidity/open interest to avoid dead books."""
+        try:
+            liquidity = float(market.get('liquidityClob') or market.get('liquidity') or 0)
+        except Exception:
+            liquidity = 0.0
+        try:
+            oi = float(market.get('openInterest') or event.get('openInterest') or 0)
+        except Exception:
+            oi = 0.0
+
+        if liquidity < self.min_liquidity_clob or oi < self.min_open_interest:
+            return False
+        return True
 
     async def update_live_scores(self):
         """
