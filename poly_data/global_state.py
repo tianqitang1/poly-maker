@@ -12,6 +12,9 @@ REVERSE_TOKENS = {}
 # Incremented when the subscribed token list changes, used to trigger websocket resubscribes
 all_tokens_version = 0
 
+# Track token1/token2 per market (condition_id) to orient websocket books
+MARKET_TOKENS = {}
+
 # Order book data for all markets
 all_data = {}  
 

@@ -114,6 +114,12 @@ def update_markets_live():
         # Update the global token list
         global_state.all_tokens = sorted(new_tokens)
 
+        # Track token1/token2 per market for websocket orientation
+        global_state.MARKET_TOKENS = {}
+        for _, row in valid_df.iterrows():
+            cid = str(row['condition_id'])
+            global_state.MARKET_TOKENS[cid] = {'token1': str(row['token1']), 'token2': str(row['token2'])}
+
         tokens_changed = new_tokens != previous_tokens
         if tokens_changed:
             added = new_tokens - previous_tokens

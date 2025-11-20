@@ -239,13 +239,7 @@ async def perform_trade(market):
                 return
             
             # Check data source orientation
-            # If the stored book asset matches token2 (NO token), we need to swap our lookup logic
-            stored_asset_id = str(global_state.all_data[market].get('asset_id', ''))
-            is_book_inverted = (stored_asset_id == str(row['token2']))
-            global_state.all_data[market]['book_inverted'] = is_book_inverted
-            
-            if is_book_inverted:
-                 logger.debug(f"Market {market}: Book data is for NO token. adjusting price lookups.")
+            # Assume websocket book is always for token1 (YES); do not invert based on asset_id mismatches
 
             # Get current positions for both outcomes
             pos_1 = get_position(row['token1'])['size']
@@ -285,11 +279,8 @@ async def perform_trade(market):
                 orders = get_order(token)
 
                 # Determine lookup name for pricing utils
-                # Standard: token1 (YES) book -> 'token1' reads direct, 'token2' inverts
-                # Inverted: token2 (NO) book  -> 'token1' needs to invert (ask for 'token2'), 'token2' reads direct (ask for 'token1')
+                # Standard: token1 (YES) book -> 'token1' reads direct, 'token2' inverts inside get_best_bid_ask_deets
                 lookup_name = detail['name']
-                if is_book_inverted:
-                    lookup_name = 'token2' if detail['name'] == 'token1' else 'token1'
 
                 # Get market depth and price information
                 # Use min_size from config to determine what counts as "real" liquidity
@@ -444,8 +435,6 @@ async def perform_trade(market):
 
                         # Determine lookup name for risk assessment (same logic as above)
                         lookup_name = detail['name']
-                        if is_book_inverted:
-                            lookup_name = 'token2' if detail['name'] == 'token1' else 'token1'
 
                         # Get fresh market data for risk assessment with dynamic sizing
                         risk_check_size = max(check_size, row.get('min_size', 5), 5)

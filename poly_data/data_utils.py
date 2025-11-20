@@ -236,11 +236,15 @@ def update_markets():
 
     if len(received_df) > 0:
         global_state.df, global_state.params = received_df.copy(), received_params
-    
+        global_state.MARKET_TOKENS = {}
 
     for _, row in global_state.df.iterrows():
         for col in ['token1', 'token2']:
             row[col] = str(row[col])
+
+        # Track token1/token2 for this market to orient websocket books
+        cid = str(row['condition_id'])
+        global_state.MARKET_TOKENS[cid] = {'token1': row['token1'], 'token2': row['token2']}
 
         if row['token1'] not in global_state.all_tokens:
             global_state.all_tokens.append(row['token1'])

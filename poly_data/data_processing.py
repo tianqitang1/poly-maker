@@ -9,6 +9,13 @@ import asyncio
 from poly_data.data_utils import set_position, set_order, update_positions
 
 def process_book_data(asset, json_data):
+    asset_id = str(json_data['asset_id'])
+
+    # Only keep the primary (token1/YES) book to avoid overwriting with token2 feeds
+    primary = global_state.MARKET_TOKENS.get(asset, {}).get('token1')
+    if primary and asset_id != primary:
+        return
+
     global_state.all_data[asset] = {
         'asset_id': json_data['asset_id'],  # token_id for the Yes token
         'bids': SortedDict(),

@@ -27,8 +27,8 @@ import poly_data.global_state as global_state
 
 def get_best_bid_ask_deets(market, name, size, deviation_threshold=0.05):
     market_data = global_state.all_data[market]
-    is_book_inverted = bool(market_data.get('book_inverted', False))
-    invert_prices = (name == 'token2') ^ is_book_inverted
+    # Assume the incoming book is always for token1 (YES). Invert only when reading token2.
+    invert_prices = (name == 'token2')
 
     best_bid, best_bid_size, second_best_bid, second_best_bid_size, top_bid = find_best_price_with_size(market_data['bids'], size, reverse=True)
     best_ask, best_ask_size, second_best_ask, second_best_ask_size, top_ask = find_best_price_with_size(market_data['asks'], size, reverse=False)
@@ -42,6 +42,11 @@ def get_best_bid_ask_deets(market, name, size, deviation_threshold=0.05):
         mid_price = None
         bid_sum_within_n_percent = 0
         ask_sum_within_n_percent = 0
+
+    # If the book looks inverted (bid > ask), flip once to correct orientation
+    if best_bid is not None and best_ask is not None and best_bid > best_ask:
+        invert_prices = not invert_prices
+        print(f"[book flip] market {market} name {name}: bid {best_bid} > ask {best_ask}, flipping orientation")
 
     if invert_prices:
         # Handle None values before arithmetic operations
