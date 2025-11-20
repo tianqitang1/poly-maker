@@ -727,6 +727,10 @@ class MarketScanner:
 
                                             if best_bid is not None and best_ask is not None:
                                                 mid_price = (best_bid + best_ask) / 2
+                                                
+                                                # Update spread dynamically
+                                                current_spread = best_ask - best_bid
+                                                market_info['spread'] = current_spread
 
                                                 arb_opp = await self.post_res_arb.check_market_for_arb(
                                                     market_id=condition_id,
