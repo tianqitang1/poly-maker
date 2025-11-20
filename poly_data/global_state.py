@@ -9,6 +9,9 @@ all_tokens = []
 # Mapping between tokens in the same market (YES->NO, NO->YES)
 REVERSE_TOKENS = {}  
 
+# Incremented when the subscribed token list changes, used to trigger websocket resubscribes
+all_tokens_version = 0
+
 # Order book data for all markets
 all_data = {}  
 
@@ -46,4 +49,3 @@ orders = {}
 # Current positions for each token
 # Format: {token_id: {'size': float, 'avgPrice': float}}
 positions = {}
-

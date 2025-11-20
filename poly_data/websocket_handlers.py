@@ -23,6 +23,9 @@ async def connect_market_websocket(chunk):
         attempt to reconnect after a short delay.
     """
     uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    start_version = getattr(global_state, "all_tokens_version", 0)
+    restart_requested = False
+
     async with websockets.connect(uri, ping_interval=5, ping_timeout=None) as websocket:
         # Prepare and send subscription message
         message = {"assets_ids": chunk}
@@ -34,7 +37,18 @@ async def connect_market_websocket(chunk):
         try:
             # Process incoming market data indefinitely
             while True:
-                message = await websocket.recv()
+                # Exit if the tracked token list changed (sheet update or manual change)
+                if getattr(global_state, "all_tokens_version", start_version) != start_version:
+                    print("Market token list changed, restarting market websocket")
+                    restart_requested = True
+                    break
+
+                try:
+                    message = await asyncio.wait_for(websocket.recv(), timeout=10)
+                except asyncio.TimeoutError:
+                    # Timeout is expected; loop again so we can notice version changes
+                    continue
+
                 json_data = json.loads(message)
 
                 # Handle different message formats from the server
@@ -50,6 +64,10 @@ async def connect_market_websocket(chunk):
                     process_data(json_data)
                 else:
                     print(f"Unexpected data type from market websocket: {type(json_data)}")
+        except asyncio.CancelledError:
+            print("Market websocket task cancelled, closing connection")
+            restart_requested = True
+            raise
         except websockets.ConnectionClosed:
             print("Connection closed in market websocket")
             print(traceback.format_exc())
@@ -58,7 +76,7 @@ async def connect_market_websocket(chunk):
             print(traceback.format_exc())
         finally:
             # Brief delay before attempting to reconnect
-            await asyncio.sleep(5)
+            await asyncio.sleep(1 if restart_requested else 5)
 
 async def connect_user_websocket():
     """
@@ -111,6 +129,9 @@ async def connect_user_websocket():
                     process_user_data(json_data)
                 else:
                     print(f"Unexpected data type from user websocket: {type(json_data)}")
+        except asyncio.CancelledError:
+            print("User websocket task cancelled, closing connection")
+            raise
         except websockets.ConnectionClosed:
             print("Connection closed in user websocket")
             print(traceback.format_exc())

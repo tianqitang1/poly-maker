@@ -45,6 +45,7 @@ def update_markets_live():
     - Rebuilds global_state.all_tokens preserving tokens with active positions/orders
     """
     try:
+        previous_tokens = set(str(t) for t in global_state.all_tokens)
         received_df, received_params = get_sheet_df()
         
         if len(received_df) == 0:
@@ -111,8 +112,19 @@ def update_markets_live():
                 new_tokens.add(str(token))
 
         # Update the global token list
-        global_state.all_tokens = list(new_tokens)
-        logger.info(f"Updated active markets. Monitoring {len(global_state.all_tokens)} tokens.")
+        global_state.all_tokens = sorted(new_tokens)
+
+        tokens_changed = new_tokens != previous_tokens
+        if tokens_changed:
+            added = new_tokens - previous_tokens
+            removed = previous_tokens - new_tokens
+            global_state.all_tokens_version += 1
+            logger.info(
+                f"Updated active markets. Monitoring {len(global_state.all_tokens)} tokens "
+                f"(+{len(added)} / -{len(removed)}; version {global_state.all_tokens_version})."
+            )
+        else:
+            logger.info(f"Updated active markets. Monitoring {len(global_state.all_tokens)} tokens (no change).")
 
     except Exception as e:
         logger.error(f"Error in update_markets_live: {e}", exc_info=True)
@@ -203,16 +215,28 @@ async def main():
 
     # Main loop - maintain websocket connections
     while True:
-        try:
-            # Connect to market and user websockets simultaneously
-            await asyncio.gather(
-                connect_market_websocket(global_state.all_tokens),
-                connect_user_websocket()
-            )
-            logger.info("Reconnecting to the websocket")
-        except:
-            logger.error("Error in main loop", exc_info=True)
+        market_task = asyncio.create_task(connect_market_websocket(global_state.all_tokens))
+        user_task = asyncio.create_task(connect_user_websocket())
 
+        done, pending = await asyncio.wait(
+            [market_task, user_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                logger.info("Cancelled remaining websocket task after restart request")
+
+        for task in done:
+            try:
+                task.result()
+            except Exception:
+                logger.error("Websocket task ended with error", exc_info=True)
+
+        logger.info("Reconnecting to the websocket")
         await asyncio.sleep(1)
         gc.collect()  # Clean up memory
 
