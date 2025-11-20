@@ -19,6 +19,7 @@ class SportsArbStrategy:
         self.config = config.get('strategy', {})
         self.flash_config = self.config.get('flash_arb', {})
         self.post_res_config = self.config.get('post_res_arb', {})
+        self.max_game_age_hours = self.post_res_config.get('max_game_age_hours', 48)
         
         # State tracking
         self.executed_markets = set()
@@ -61,7 +62,31 @@ class SportsArbStrategy:
         Check if game is ended and we can buy the winner cheap.
         """
         score = market.get('score', '')
-        if not score or score == '0-0': return # Ignore canceled/empty
+        normalized_score = score.replace(" ", "") if isinstance(score, str) else ""
+        if not score or normalized_score == '0-0':
+            # Empty/0-0 scores usually mean canceled or not started; avoid trap markets
+            return
+
+        period = (market.get('period') or '').upper()
+        if period in ['CAN', 'CANCELED', 'PPD', 'POSTPONED']:
+            return
+
+        # Guardrail: only trade games that started recently (avoid stale trap markets)
+        start_time = market.get('start_time')
+        if start_time:
+            try:
+                from dateutil import parser
+                start_dt = parser.parse(start_time).replace(tzinfo=None)
+                age_hours = (datetime.utcnow() - start_dt).total_seconds() / 3600
+                if age_hours > self.max_game_age_hours:
+                    logger.warning(f"Skipping {market.get('question')} - game started {age_hours:.1f}h ago")
+                    return
+                if age_hours < -self.max_game_age_hours:
+                    # Start time far in the future compared to now; likely bad data
+                    logger.warning(f"Skipping {market.get('question')} - start time {age_hours:.1f}h in future")
+                    return
+            except Exception:
+                pass
         
         # Parse Score
         try:
@@ -126,13 +151,21 @@ class SportsArbStrategy:
 
     async def _execute_trade(self, market: Dict[str, Any], token_id: str, price: float, strategy_type: str):
         """Execute the trade."""
+        size = self.config.get('max_position_size', 10.0)
+
+        # Make logs human-friendly
+        outcome_name = next(
+            (t.get('outcome') for t in market.get('tokens', []) if t.get('id') == token_id),
+            'unknown outcome'
+        )
+        token_label = f"{token_id[:10]}..." if len(str(token_id)) > 13 else str(token_id)
+
         if self.config.get('dry_run', True):
-            logger.info(f" [DRY RUN] Would BUY {token_id} @ {price} ({strategy_type})")
+            logger.info(f" [DRY RUN] Would BUY '{outcome_name}' ({token_label}) @ {price}, Size: {size} ({strategy_type})")
             self.executed_markets.add(market['condition_id'])
             return
 
         # Live Trade
-        size = self.config.get('max_position_size', 10.0)
         try:
             logger.info(f"💸 EXECUTING BUY: {token_id} @ {price}, Size: {size}")
             resp = self.client.create_order(

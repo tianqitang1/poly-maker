@@ -4,7 +4,8 @@
 scanner:
   refresh_interval: 60  # seconds between market list refreshes
   max_markets: 200      # max markets to monitor via websocket
-  
+  recent_window_hours: 48  # only include games starting within +/- this window
+
 # Strategy Parameters
 strategy:
   enabled: true
@@ -19,6 +20,7 @@ strategy:
     enabled: true
     min_confidence: 90     # % confidence in winner
     price_ceiling: 0.995    # Max price to buy at (e.g. don't buy at 99.5c)
+    max_game_age_hours: 48  # ignore games that started more than this many hours ago
     
   # Flash/Momentum Arb (Live Game)
   flash_arb:

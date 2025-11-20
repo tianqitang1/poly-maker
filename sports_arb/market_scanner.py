@@ -21,6 +21,9 @@ class SportsMarketScanner:
         self.client = client
         self.config = config
         self.markets: Dict[str, Dict[str, Any]] = {} # condition_id -> market_info
+        scanner_cfg = config.get('scanner', {}) if config else {}
+        # Only watch games within a recent window to avoid stale/canceled markets
+        self.recent_window_hours = scanner_cfg.get('recent_window_hours', 48)
         
     async def fetch_active_sports_markets(self) -> List[Dict[str, Any]]:
         """
@@ -98,8 +101,34 @@ class SportsMarketScanner:
                 ],
                 'raw_event': event # Keep raw event for deep updates
             }
+
+            # Guard: skip markets too far from now (trap/canceled listings)
+            if not self._is_recent_game(market_info):
+                continue
             
             markets_dict[condition_id] = market_info
+
+    def _is_recent_game(self, market_info: Dict[str, Any]) -> bool:
+        """
+        Only keep markets whose start time is within +/- recent_window_hours.
+        This mirrors spike_momentum guardrails to avoid trap or stale markets.
+        """
+        period = (market_info.get('period') or '').upper()
+        if period in ['CAN', 'CANCELED', 'PPD', 'POSTPONED']:
+            return False
+
+        start = market_info.get('start_time')
+        if not start:
+            # If we don't have a start time, keep live/ended games; otherwise skip to be safe
+            return market_info.get('live') or market_info.get('ended')
+
+        try:
+            from dateutil import parser
+            dt = parser.parse(start).replace(tzinfo=None)
+            diff_hours = (datetime.utcnow() - dt).total_seconds() / 3600
+            return -self.recent_window_hours <= diff_hours <= self.recent_window_hours
+        except Exception:
+            return True  # Unable to parse; keep existing behavior
 
     async def update_live_scores(self):
         """
@@ -113,7 +142,10 @@ class SportsMarketScanner:
                 now = datetime.utcnow()
                 
                 for cid, m in self.markets.items():
-                    # Always check if flagged live/ended
+                    if not self._is_recent_game(m):
+                        continue
+
+                    # Always check if flagged live/ended (within recency window)
                     if m['live'] or m['ended']:
                         targets.append(m)
                         continue
@@ -167,8 +199,11 @@ class SportsMarketScanner:
         """
         active_tokens = []
         
-        # 1. Live/Ended Games
+        # 1. Live/Ended Games within recency window
         for m in self.markets.values():
+            if not self._is_recent_game(m):
+                continue
+
             if m['live'] or m['ended']:
                 for t in m['tokens']:
                     active_tokens.append(t['id'])

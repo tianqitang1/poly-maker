@@ -34,6 +34,9 @@ async def main():
         logger.error("config.yaml not found in sports_arb/")
         return
 
+    strategy_cfg = config.get('strategy', {})
+    logger.info(f"Mode: {'DRY RUN' if strategy_cfg.get('dry_run', True) else 'LIVE TRADING'}")
+
     # Init Client
     load_dotenv()
     try:
