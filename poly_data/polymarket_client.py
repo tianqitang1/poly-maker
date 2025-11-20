@@ -20,6 +20,10 @@ from py_clob_client.clob_types import OpenOrderParams
 
 # Smart contract ABIs
 from poly_data.abis import NegRiskAdapterABI, ConditionalTokenABI, erc20_abi
+from poly_utils.proxy_config import (
+    get_web3_provider_with_proxy,
+    setup_proxy,
+)
 
 # Load environment variables
 load_dotenv()
@@ -49,6 +53,9 @@ class PolymarketClient:
         """
         host="https://clob.polymarket.com"
 
+        # Ensure py_clob_client HTTP traffic also uses the configured proxy (needed to bypass Cloudflare blocks)
+        setup_proxy(verbose=False)
+
         # Handle legacy use_near_sure parameter for backward compatibility
         if use_near_sure and account_type == 'default':
             account_type = 'near_sure'
@@ -64,6 +71,11 @@ class PolymarketClient:
             browser_address = os.getenv("NEG_RISK_ARB_BROWSER_ADDRESS")
             print("Initializing Polymarket client for NEG-RISK-ARB account...")
             env_prefix = "NEG_RISK_ARB_"
+        elif account_type == 'sports_arb':
+            key = os.getenv("SPORTS_ARB_PK")
+            browser_address = os.getenv("SPORTS_ARB_BROWSER_ADDRESS")
+            print("Initializing Polymarket client for SPORTS-ARB account...")
+            env_prefix = "SPORTS_ARB_"
         elif account_type == 'og_maker':
             key = os.getenv("OG_MAKER_PK")
             browser_address = os.getenv("OG_MAKER_BROWSER_ADDRESS")
@@ -99,7 +111,6 @@ class PolymarketClient:
         self.client.set_api_creds(creds=self.creds)
 
         # Initialize Web3 connection to Polygon with proxy support
-        from poly_utils.proxy_config import get_web3_provider_with_proxy
         provider = get_web3_provider_with_proxy("https://polygon-rpc.com")
         web3 = Web3(provider)
         web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)

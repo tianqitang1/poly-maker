@@ -17,6 +17,8 @@ logs/
 neg_risk_arb/config.yaml
 neg_risk_arb/arb_history.json
 spike_momentum/config.yaml
+sports_arb/config.yaml
+sports_arb/arb_history.json
 config.json
 
 # Byte-compiled / optimized / DLL files
